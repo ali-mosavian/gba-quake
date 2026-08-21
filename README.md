@@ -3,6 +3,10 @@
 A deliberately small set of ROMs for testing affine-background raster racing,
 plus an exact rotating-cube reference and an explicitly experimental affine path.
 
+See [EXPERIMENTS.md](EXPERIMENTS.md) for the ledger of everything measured --
+kept, rejected with its number, and the measurement traps that have already
+invalidated results twice. Read it before trying an optimisation.
+
 ## Reading the working experiment
 
 The staged rotating quad is the hardware-validation path. Its code is split by
