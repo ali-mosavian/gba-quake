@@ -191,6 +191,16 @@ static uint32_t steps_climbed;
 static uint32_t wedged_steps, blocked_steps;
 static uint32_t pixel_iteration_count, texel_sample_count;
 static uint32_t span_clear_count, span_hidden_count, span_mixed_count;
+/* Spans whose v never moves across the row, and the texels in them. With a
+ * level camera every vertical wall produces these: a horizontal scanline maps
+ * to a horizontal line on the wall, so the texture row is constant and the
+ * per-texel row lookup is loop-invariant. */
+static uint32_t span_flat_v_count, texel_flat_v_count;
+/* Disjoint from the above: du==0 with dv!=0. The two together are the share of
+ * the frame a single specialised inner loop could take, because both cases are
+ * "one coordinate is constant" and reduce to the same five instructions with
+ * different (base, coordinate, step, mask). */
+static uint32_t span_flat_u_count, texel_flat_u_count;
 static uint32_t texture_rom_fallbacks, near_clipped_faces;
 static uint16_t near_clip_count, screen_clip_count;
 static uint16_t cached_camera_leaf = INVALID_LEAF;
@@ -218,6 +228,7 @@ typedef struct {
     int32_t player_yaw_q8;
     int32_t player_speed;
     uint32_t wedged_steps, blocked_steps;
+    uint32_t spans_flat_v, texels_flat_v, spans_flat_u, texels_flat_u;
 } BspProfile;
 EWRAM volatile BspProfile bsp_profile;
 

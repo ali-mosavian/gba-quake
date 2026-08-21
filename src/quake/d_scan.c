@@ -563,6 +563,7 @@ void draw_textured_polygon_reference(
                 int v1 = texel_from_planes(voz1, inv1);
                 int du = divide_short_span(u1 - u, (unsigned)segment_pixels);
                 int dv = divide_short_span(v1 - v, (unsigned)segment_pixels);
+
 #if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH) && \
         !defined(BSP_TEXTURED_NO_LIGHT)
                 /* One luxel for the whole segment, taken at its midpoint.
@@ -626,6 +627,28 @@ void draw_textured_polygon_reference(
                 u &= (int)u_wrap;
                 v = (v & (int)v_wrap) << width_shift;
                 dv <<= width_shift;
+#ifdef BSP_PROFILE_SPAN_SHAPE
+                /* How much of the frame a specialised inner loop could take.
+                 *
+                 * If a run stays in one texture row, the row offset is loop
+                 * invariant and the address is one mask and one load instead
+                 * of two masks and an add; the same is true with the axes
+                 * swapped if it stays in one column. Both reduce to the same
+                 * five instructions over different (base, coordinate, step,
+                 * mask), so one specialised body would serve both. The two
+                 * counters are kept disjoint so they sum to that coverage.
+                 *
+                 * Behind its own define, not BSP_PROFILE_COUNTS: the test
+                 * costs two multiplies a span, which would show up in every
+                 * ladder measurement taken with the ordinary profile build. */
+                if ((v >> 8) == ((v + dv * segment_pixels) >> 8)) {
+                    ++span_flat_v_count;
+                    texel_flat_v_count += (uint32_t)segment_pixels + 1;
+                } else if ((u >> 8) == ((u + du * segment_pixels) >> 8)) {
+                    ++span_flat_u_count;
+                    texel_flat_u_count += (uint32_t)segment_pixels + 1;
+                }
+#endif
 #endif
 #ifdef BSP_TEXTURED_SOLID
                 (void)u; (void)v; (void)du; (void)dv;   /* coverage-only diagnostic */

@@ -807,6 +807,43 @@ before a single pixel, down from 91% before the coordinate bake and the
 non-convex merge. Layout work has taken what it can reach; what moved the
 number after that was cutting the face count.
 
+### Specialising the span loop on du/dv: analysed, not built
+
+The address in the pixel loop is four instructions -- mask the row, mask the
+column, add the texture base, load -- and three of them disappear if one of the
+two coordinates holds still across the run: the row (or column) offset becomes
+a loop invariant and the address is one mask and one load. Both cases reduce to
+the same five instructions over different `(base, coordinate, step, mask)`, so
+one specialised body would serve both.
+
+**The ceiling is real.** A build that pretends the row is invariant for every
+span -- wrong picture, right cost -- runs at **1,760,511** against 1,873,533,
+so **113,022 cycles**, 11.8 a texel. The loop is not load-bound; the address
+arithmetic is a sixth of the frame.
+
+**The coverage is bimodal, which is what kills it.** `bsp_textured_shape`
+counts the two cases disjointly:
+
+| pose | texels | one row | one column | covered |
+|---|---|---|---|---|
+| spawn | 9,599 | 3,847 | 3,689 | **78.5%** |
+| walk, 4s (facing a wall) | 9,600 | 9,152 | 0 | **95.3%** |
+| walk, 8s | 9,600 | 9,152 | 0 | **95.3%** |
+| walk, 14s (oblique) | 9,587 | 143 | 13 | **1.6%** |
+
+The condition is really "is this surface face on", and it collapses the moment
+the camera turns. Weakening it from `dv == 0` to "v crosses no texel boundary
+across the run" was measured and added almost nothing -- 120 texels to 143 at
+the oblique pose -- so there is no useful middle ground either.
+
+So the specialisation would be worth **4.7%** at the benchmark pose, **13%**
+pressed against a wall, and **0.1%** looking diagonally across a room -- and
+the oblique views are not the cheap ones: 14s draws 113 faces against the
+spawn's 108. It buys the most where there is least to gain, costs a second
+32-case unrolled body in the IWRAM the drawer is already sized against, and
+adds a per-span test that misses 98% of the time in the views that need help.
+Recorded rather than built.
+
 ### Filling non-convex polygons
 
 The row sweep collects every edge crossing on the row, sorts them, and fills

@@ -149,6 +149,8 @@ int main(void)
         drawn_face_count = drawn_row_count = drawn_span_count = 0;
         pixel_iteration_count = texel_sample_count = 0;
         span_clear_count = span_hidden_count = span_mixed_count = 0;
+        span_flat_v_count = texel_flat_v_count = 0;
+        span_flat_u_count = texel_flat_u_count = 0;
         texture_rom_fallbacks = near_clipped_faces = 0;
         profile_timer_start();
         clear_logical_framebuffer(logical_framebuffer);
@@ -199,10 +201,12 @@ int main(void)
             player_contents_now, solid_frames, steps_climbed,
             total_substeps, player.yaw_q8,
             approximate_length(player.velocity.x, player.velocity.y),
-            wedged_steps, blocked_steps
+            wedged_steps, blocked_steps,
 #else
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 #endif
+            span_flat_v_count, texel_flat_v_count,
+            span_flat_u_count, texel_flat_u_count
         };
 
 #ifdef CAMERA_INPUT

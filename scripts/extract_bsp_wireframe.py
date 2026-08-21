@@ -60,6 +60,8 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
     def dot(a, b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
     EPS = 1e-3
 
+    rejected = collections.Counter()
+
     def try_merge(r1, r2, normal):
         shared = None
         for i in range(len(r1)):
@@ -68,14 +70,17 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
                 c, d = r2[j], r2[(j + 1) % len(r2)]
                 if a == d and b == c:
                     if shared is not None:
-                        return None          # more than one shared edge
+                        rejected["two shared edges"] += 1
+                        return None
                     shared = (i, j)
         if shared is None:
+            rejected["no shared edge"] += 1
             return None
         i, j = shared
         spliced = ([r1[(i + 1 + k) % len(r1)] for k in range(len(r1))][:-1] +
                    [r2[(j + 1 + k) % len(r2)] for k in range(len(r2))][:-1])
         if len(set(spliced)) != len(spliced):
+            rejected["ring touches itself"] += 1
             # The union touches itself at a vertex. An even-odd fill draws it
             # correctly, but the polygon is then two lobes joined at a point
             # and every later stage -- the plane fit's widest-spread triple,
@@ -93,11 +98,16 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
             if scale < 1e-9:
                 continue
             if not allow_concave and turn / scale < -EPS:
-                return None                  # concave joint
+                rejected["concave joint"] += 1
+                return None
             if abs(turn) / scale <= EPS:
                 continue                     # collinear vertex, drop it
             out.append(cur)
-        return out if len(out) >= 3 else None
+        if len(out) < 3:
+            rejected["degenerate"] += 1
+            return None
+        rejected["merged"] += 1
+        return out
 
     groups = collections.defaultdict(list)
     for i, (plane, side, first, count, tinfo, *_) in enumerate(faces):
@@ -167,6 +177,8 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
         pieces = sum(ring_area(rings[i], normal) for i in parts)
         if pieces > 1e-6:
             worst = max(worst, abs(merged - pieces) / pieces)
+    print("  merge attempts: " +
+          ", ".join(f"{name} {count}" for name, count in rejected.most_common()))
     print(f"  merged-ring area agrees with its parts to {worst * 100:.4f}% worst case")
 
     # a node's faces are those on its plane, so its range stays contiguous
