@@ -769,6 +769,40 @@ build**: it encodes the old `TextureVertex` layout and the saturating
 reciprocal table. `bsp_textured` runs the corrected C kernel from IWRAM until
 that routine is rewritten against the new math.
 
+## Back-face culling was inverted
+
+For most of this project's life the renderer drew roughly half the geometry it
+should have, and drew the wrong half: the back-face test rejected exactly the
+faces pointing at the camera and kept their backs.
+
+`dface_t.side` says whether a face lies in front of or behind its plane, so
+after folding it into the stored normal, a POSITIVE camera distance means the
+camera is in front of the face and it must be drawn. The test skipped on
+`>= 0`.
+
+It was hard to spot because the result still looks like a room -- you see the
+outsides of the far walls through the missing near ones, so the image is
+plausible, just sparse and full of black gaps.
+
+Found by disabling each culling stage in turn and diffing the frame:
+
+| stage disabled | accepted | drawn | verdict |
+|---|---:|---:|---|
+| none (as shipped) | 120 | 100 | |
+| frustum cull | 256 | 100 | correct: extra faces all clip away |
+| PVS | 340 | 268 | 14,692 black pixels light up |
+| back-face sign fixed | 212 | 176 | the missing geometry appears |
+
+The PVS looked guilty and was not. With the sign corrected, rendering with
+and without the PVS produces **pixel-identical** frames, which is exactly what
+a correct PVS should do -- it removes only what contributes nothing. Before
+the fix the same comparison differed by 40% of the screen.
+
+The cost is real: the spawn view goes from 100 to 160 drawn faces, 957 to
+1,825 rows and about 5,000 to 9,599 texels, and the frame from 1,091,169 to
+1,970,721 cycles. **Every performance figure in this file that predates this
+section was measured on a scene missing half its polygons.**
+
 ## Player movement
 
 `src/quake/p_move.c` follows Quake's own physics: `SV_RecursiveHullCheck` for

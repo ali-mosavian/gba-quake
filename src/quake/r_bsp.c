@@ -50,6 +50,9 @@ static void rebuild_candidate_faces(unsigned camera_leaf, int32_t camera_x,
     candidate_face_count = 0;
     append_leaf_faces(camera_leaf);
     int32_t offset = bsp_leaves[camera_leaf].visibility;
+#ifdef BSP_NO_PVS
+    offset = -1;                      /* force the "visible everywhere" path */
+#endif
     if (offset < 0) {
         for (unsigned leaf = 1; leaf < BSP_LEAF_COUNT; ++leaf) append_leaf_faces(leaf);
         goto cache_faces;
@@ -171,6 +174,7 @@ static HOT void build_frame_lists(int32_t camera_x, int32_t camera_y,
                               int32_t camera_z, uint8_t yaw)
 {
     int sine = sine_q14[yaw], cosine = sine_q14[(uint8_t)(yaw + 64)];
+    (void)sine; (void)cosine;          /* unused when frustum culling is off */
     int32_t camera_ix = Q8_TO_INT(camera_x + 128);
     int32_t camera_iy = Q8_TO_INT(camera_y + 128);
     int32_t camera_iz = Q8_TO_INT(camera_z + 128);
@@ -179,8 +183,17 @@ static HOT void build_frame_lists(int32_t camera_x, int32_t camera_y,
         const RuntimeFace *face = &runtime_faces[i];
         /* The normal already carries the face's side, so the camera being on
          * or behind the plane is a single sign test. */
-        if (runtime_plane_side(face, camera_ix, camera_iy, camera_iz) >= 0) continue;
+#ifndef BSP_NO_BACKFACE_CULL
+        /* The stored normal is the face's OUTWARD normal (the side flag was
+         * folded in), so a positive distance means the camera is in front of
+         * the face and it should be drawn. This test was inverted from the
+         * beginning: it rejected exactly the faces that were facing the
+         * camera, and drew their backs instead. */
+        if (runtime_plane_side(face, camera_ix, camera_iy, camera_iz) <= 0) continue;
+#endif
+#ifndef BSP_NO_FRUSTUM_CULL
         if (!face_is_in_view(face, camera_ix, camera_iy, camera_iz, sine, cosine)) continue;
+#endif
 #ifdef BSP_TEXTURED
         frame_faces[accepted_face_count] = (uint16_t)i;
 #endif
