@@ -79,11 +79,16 @@ raster_beam_frame:
 .Lfeed_pass:
     mov     r11, r10                @ rewind to the line's first command
 
-    /* Wait for the HBlank before the target screen line, then install
-     * command zero so the left edge is correct from the first pixel. */
+    /* Wait for the line BEFORE the target, then for its HBlank, and install
+     * command zero there so the left edge is correct from the first pixel.
+     * The line before screen line 0 is VCOUNT 227, the last VBlank line --
+     * waiting for "line - 1" literally would wait for 0xffff and hang, which
+     * showed as the whole screen repeating atlas row zero: the feeder never
+     * issued a single command and PB = PD = 0 froze the reference point. */
+    subs    r2, r5, #1
+    movlt   r2, #227
 1:  ldrh    r0, [r4, #REG_VCOUNT_OFF]
-    add     r0, r0, #1
-    cmp     r0, r5
+    cmp     r0, r2
     bne     1b
 2:  ldrh    r0, [r4, #REG_DISPSTAT_OFF]
     tst     r0, #DISPSTAT_HBLANK
