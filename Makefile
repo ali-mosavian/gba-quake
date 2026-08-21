@@ -2,7 +2,7 @@ PROJECT := gba-affine-raster-lab
 BUILD := build
 ASM_OBJECTS := $(BUILD)/r_math_arm.o $(BUILD)/d_frame_arm.o \
 	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o
-TESTS := bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
+TESTS := floor_mode7 bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
 DKP_IMAGE ?= devkitpro/devkitarm:latest
 
 DEVKITARM ?= /opt/devkitpro/devkitARM
@@ -48,6 +48,12 @@ src/generated/runtime_cube_luts.h: scripts/generate_runtime_luts.py
 
 $(BUILD)/cube_dynamic.o: src/cube_dynamic.c src/quad_stream.h src/gba_hardware.h src/generated/runtime_cube_luts.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -c $< -o $@
+
+src/generated/floor_plan.h: scripts/generate_floor_plan.py src/generated/bsp_wireframe_map.h
+	python3 $<
+
+$(BUILD)/floor_mode7.o: src/floor_mode7.c src/gba_hardware.h src/generated/floor_plan.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -c $< -o $@
 
 $(BUILD)/cube_wireframe.o: src/cube_wireframe.c src/gba_hardware.h src/generated/runtime_cube_luts.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -c $< -o $@

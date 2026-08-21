@@ -1117,6 +1117,30 @@ saving is earned per *drawn* face, and this renderer rejects three quarters of
 its candidates. Nothing tightens that -- the proximity limit trades the yield
 away faster than it trades the radius down.
 
+### PPU floor: the Mode 7 proof
+
+`floor_mode7` is the working form of the idea the quad experiments killed. The
+quads polled and rewrote PA/PC mid-scanline and flickered; a horizontal plane
+under a yaw-only camera needs only ONE affine state per scanline, and an
+HBlank-triggered DMA with destination reload latches it before each line draws
+-- the hardware path, with no race to lose.
+
+`generate_floor_plan.py` bakes the floor plane under the spawn (z=0, 59 faces)
+into a 256x256-pixel pre-lit plan -- texture times lightmap through the same
+shade table the software renderer uses, 8 world units per pixel, 246 distinct
+tiles against the affine BG's budget of 256. The ROM builds a 160-entry table
+of (PA, PB, PC, PD, X, Y) per frame from camera x/y/height/yaw -- a few
+thousand cycles -- and the PPU draws every floor pixel at native 240x160, a
+resolution the software renderer cannot afford anywhere.
+
+Measured motivation: 23.3% to 38.5% of all drawn texels lie on horizontal
+faces, plus their span setup and front end. What stands between the proof and
+that prize: one plane height per scanline per affine BG against a map with
+many floor heights (Mode 2's two affine BGs give floor and ceiling one height
+each; software fills the rest), and the framebuffer must leave Mode 4 for a
+tiled affine BG so the layers can stack -- which also lets the BG matrix do
+the 2x upscale and shrinks the expand copy about 8x.
+
 ### What 30 FPS would take
 
 The 30 FPS budget is 559K cycles. The stages outside rendering already cost

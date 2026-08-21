@@ -104,6 +104,15 @@ spawn and ~+31% at two other yaws, ~2,900 cycles per extra accepted face.
 | Surface cache (texture x lightmap) | 2.6MB at mip 1; 41KB free |
 | Loading the LIGHTING lump into RAM | 888,849 B; read from ROM in place |
 
+## Open leads
+
+- **PPU floor (Mode 7).** Proven in `floor_mode7`: one floor plane drawn
+  entirely by the PPU from a pre-lit plan, per-scanline affine state via
+  HBlank DMA. 23-39% of drawn texels are on horizontal faces. Integration
+  needs the Mode 4 -> tiled-affine-framebuffer move and accepts one plane
+  height per scanline per BG. The quad experiments' flicker does not apply:
+  that was mid-scanline polling, this is hardware-latched per line.
+
 ## Data quirks that cost time
 
 - **`maps/dm1.bsp` is not stock Quake lighting.** `_lmscale 4`, `_lm_border 1`,

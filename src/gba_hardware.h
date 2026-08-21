@@ -22,7 +22,20 @@
 #define REG_MEMCTRL GBA_REG32(0x04000800)
 #define MEMCTRL_FAST_EWRAM 0x0e000020
 #define REG_VCOUNT  GBA_REG16(0x04000006)
+#define REG_DISPSTAT GBA_REG16(0x04000004)
 #define REG_BG2CNT  GBA_REG16(0x0400000c)
+#define REG_BG2PA   GBA_REG16(0x04000020)
+#define REG_BG2PC   GBA_REG16(0x04000024)
+#define REG_BG2X    GBA_REG32(0x04000028)
+#define REG_BG2Y    GBA_REG32(0x0400002c)
+/* DMA 0: the highest-priority channel, used for per-scanline register tables.
+ * An HBlank-triggered, repeating transfer with destination reload rewrites
+ * BG2's affine state during every HBlank of the visible frame -- the
+ * hardware-latched path that the polled mid-scanline experiments in this repo
+ * lacked, and the reason those flickered where this cannot. */
+#define REG_DMA0SAD GBA_REG32(0x040000b0)
+#define REG_DMA0DAD GBA_REG32(0x040000b4)
+#define REG_DMA0CNT GBA_REG32(0x040000b8)
 #define REG_BG2PB   GBA_REG16(0x04000022)
 #define REG_BG2PD   GBA_REG16(0x04000026)
 #define REG_BG3CNT  GBA_REG16(0x0400000e)
@@ -58,6 +71,12 @@ enum {
     WINDOW_BG2 = 1u << 2,
     WINDOW_BG3 = 1u << 3,
     BG_SIZE_128 = 0u << 14,
+    BG_SIZE_256 = 1u << 14,
+    DMA_ENABLE = 1u << 31,
+    DMA_REPEAT = 1u << 25,
+    DMA_32BIT = 1u << 26,
+    DMA_AT_HBLANK = 2u << 28,
+    DMA_DST_RELOAD = 3u << 21,
     BG_WRAP = 1u << 13,
     BG_MAP_BLOCK_8 = 8u << 8,
 
