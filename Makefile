@@ -54,9 +54,13 @@ $(BUILD)/cube_wireframe.o: src/cube_wireframe.c src/gba_hardware.h src/generated
 
 BSP_MAP ?= /Users/alim/work/badlogic/softquake/maps/dm1.bsp
 BSP_PAK ?= /Users/alim/Downloads/Quake/id1/pak0.pak
+# Quake textures are authored for 320x200; this renderer draws 120x80 and
+# doubles, so level 1 is already finer than the screen resolves. Level 0 is
+# indistinguishable here and costs 132KB of ROM and a 32KB working set.
+BSP_MIP ?= 1
 src/generated/bsp_wireframe_map.h: scripts/extract_bsp_wireframe.py
 	mkdir -p src/generated
-	python3 $< $(BSP_MAP) $@ $(BSP_PAK)
+	python3 $< $(BSP_MAP) $@ $(BSP_PAK) --mip=$(BSP_MIP)
 
 $(BUILD)/bsp_wireframe.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -c $< -o $@

@@ -151,7 +151,7 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks):
     return new_faces, new_rings, new_nodes, new_leaves, new_marks, len(absorbed)
 
 
-def extract(input_path, output_path, pak_path=None, merge=True):
+def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
     data = pathlib.Path(input_path).read_bytes()
     if struct.unpack_from("<i", data)[0] != 29: raise ValueError("expected Quake BSP v29")
     lumps = [struct.unpack_from("<ii", data, 4 + i * 8) for i in range(15)]
@@ -171,11 +171,22 @@ def extract(input_path, output_path, pak_path=None, merge=True):
     texture_count = struct.unpack_from("<i", texture_lump)[0]
     texture_offsets = struct.unpack_from(f"<{texture_count}i", texture_lump, 4)
     textures, texture_pixels = [], bytearray()
+    # Quake miptex carries four mip levels. The originals are authored for
+    # 320x200; this renderer draws 120x80 and doubles, so level 0 is far more
+    # texture than the screen can show. Selecting a lower level costs nothing
+    # at runtime: the texture axes below are scaled by the same factor, so u
+    # and v arrive already in the chosen level's texel units and the GBA code
+    # is unchanged.
     for offset in texture_offsets:
         if offset < 0:
             textures.append((0, 1, 1)); continue
-        _, width, height, mip0, _, _, _ = struct.unpack_from("<16s6I", texture_lump, offset)
-        pixels = texture_lump[offset + mip0:offset + mip0 + width * height]
+        _, width, height, *mip_offsets = struct.unpack_from("<16s6I", texture_lump, offset)
+        level = mip
+        while level and ((width >> level) < 1 or (height >> level) < 1):
+            level -= 1
+        base = mip_offsets[level]
+        width, height = width >> level, height >> level
+        pixels = texture_lump[offset + base:offset + base + width * height]
         stored_width = 1 << (width - 1).bit_length()
         stored_height = 1 << (height - 1).bit_length()
         textures.append((len(texture_pixels), stored_width, stored_height))
@@ -234,7 +245,8 @@ def extract(input_path, output_path, pak_path=None, merge=True):
          [f"{{{node[0]}, {{{node[1]}, {node[2]}}}, {node[9]}, {node[10]}}}" for node in nodes], 4)
     # Quantised texture axes, matching what the GBA reads at runtime. Face
     # texture origins are derived from these so host and target agree exactly.
-    axes_q12 = [[round(value * 4096) for value in info[:8]] for info in texinfo]
+    axes_q12 = [[round(value * (4096.0 / (1 << mip))) for value in info[:8]]
+                for info in texinfo]
 
     def runtime_uv_q8(vertex, texture_info):
         """Reproduce r_surf.c world_texture_coordinates for one vertex."""
@@ -268,9 +280,12 @@ def extract(input_path, output_path, pak_path=None, merge=True):
     emit(lines, "static const MapFace bsp_faces[BSP_FACE_COUNT]", face_values, 2)
     emit(lines, "static const uint16_t bsp_face_vertices[]",
          [str(v) for v in face_vertex_ring], 16)
+    # Axes scaled by the mip factor so u and v come out in the stored level's
+    # texel units; nothing downstream needs to know the level.
+    axis_scale = 4096.0 / (1 << mip)
     emit(lines, "static const MapTexInfo bsp_texinfo[]",
          ["{{{%d, %d, %d, %d}, {%d, %d, %d, %d}}, %d}" % tuple(
-             [round(value * 4096) for value in info[:8]] + [info[8]]) for info in texinfo], 2)
+             [round(value * axis_scale) for value in info[:8]] + [info[8]]) for info in texinfo], 2)
     emit(lines, "static const MapTexture bsp_textures[]",
          [f"{{{offset}, {width}, {height}}}" for offset, width, height in textures], 4)
     emit(lines, "static const uint8_t bsp_texture_pixels[]", [str(x) for x in texture_pixels], 24)
@@ -281,9 +296,11 @@ def extract(input_path, output_path, pak_path=None, merge=True):
     emit(lines, "static const uint8_t bsp_visibility[BSP_VISIBILITY_BYTES]", [str(x) for x in visibility], 24)
     lines.append("#endif")
     pathlib.Path(output_path).write_text("\n".join(lines) + "\n")
-    print(f"BSP package: {len(vertices)} vertices, {len(edges)} edges, {len(faces)} faces, {len(leaves)} leaves")
+    print(f"BSP package: {len(vertices)} vertices, {len(edges)} edges, {len(faces)} faces, "
+          f"{len(leaves)} leaves, mip {mip}, texture bytes {len(texture_pixels)}")
 
 if __name__ == "__main__":
     extract(sys.argv[1], sys.argv[2],
             sys.argv[3] if len(sys.argv) > 3 else None,
-            merge="--no-merge" not in sys.argv)
+            merge="--no-merge" not in sys.argv,
+            mip=next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--mip=")), 0))

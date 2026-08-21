@@ -103,6 +103,14 @@ EWRAM static uint8_t node_near_side[BSP_NODE_COUNT];
  * all ones skips the segment outright. */
 IWRAM_DATA static uint32_t texture_coverage[SCREEN_HEIGHT][4];
 #ifndef BSP_TEXTURED_SOLID
+/* Downsampling shrank the working set enough that this no longer overflows:
+ * at mip 1 the spawn view caches 8KB where mip 0 filled all 32KB and still
+ * fell back to ROM for the rest.
+ *
+ * It stays in EWRAM. IWRAM would make texel reads one cycle instead of three,
+ * but IWRAM also holds the framebuffer, the coverage bitmap, the hot code and
+ * the stack, and the face loop alone takes a 2,352-byte frame; a 10KB cache
+ * there left too little stack and the renderer ran away to 78M cycles. */
 enum { TEXTURE_CACHE_BYTES = 32 * 1024 };
 EWRAM static uint8_t texture_cache[TEXTURE_CACHE_BYTES];
 EWRAM static uint16_t texture_cache_offsets[
