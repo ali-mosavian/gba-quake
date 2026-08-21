@@ -1,8 +1,9 @@
 PROJECT := gba-affine-raster-lab
 BUILD := build
 ASM_OBJECTS := $(BUILD)/r_math_arm.o $(BUILD)/d_frame_arm.o \
-	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o $(BUILD)/r_exact_arm.o
-TESTS := bsp_textured_sc floor_mode7_sc quad_affine_exact_static_sc quad_affine_exact_sc floor_mode7 bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged quad_affine_exact quad_affine_exact_static
+	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o $(BUILD)/r_exact_arm.o \
+	$(BUILD)/r_beam_arm.o
+TESTS := beam_frame beam_frame_sc bsp_textured_sc floor_mode7_sc quad_affine_exact_static_sc quad_affine_exact_sc floor_mode7 bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged quad_affine_exact quad_affine_exact_static
 DKP_IMAGE ?= devkitpro/devkitarm:latest
 
 DEVKITARM ?= /opt/devkitpro/devkitARM
@@ -48,6 +49,18 @@ src/generated/runtime_cube_luts.h: scripts/generate_runtime_luts.py
 
 $(BUILD)/cube_dynamic.o: src/cube_dynamic.c src/quad_stream.h src/gba_hardware.h src/generated/runtime_cube_luts.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -c $< -o $@
+
+src/generated/beam_frame.h: scripts/generate_beam_frame.py src/generated/bsp_wireframe_map.h
+	python3 $<
+
+$(BUILD)/beam_frame.o: src/beam_frame.c src/gba_hardware.h src/generated/beam_frame.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -c $< -o $@
+
+$(BUILD)/beam_frame_sc.o: src/beam_frame.c src/gba_hardware.h src/generated/beam_frame.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -DGBA_SLOW_ROM=1 -c src/beam_frame.c -o $@
+
+$(BUILD)/r_beam_arm.o: src/asm/r_beam_arm.S | $(BUILD)
+	$(CC) -mcpu=arm7tdmi -marm -mthumb-interwork -g -c $< -o $@
 
 src/generated/floor_plan.h: scripts/generate_floor_plan.py src/generated/bsp_wireframe_map.h
 	python3 $<
