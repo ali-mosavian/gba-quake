@@ -245,6 +245,56 @@ int main(void)
         }
         uint32_t after_pvs = profile_timer_read();
         build_frame_lists(camera_x, camera_y, camera_z, yaw);
+#if defined(BSP_TEXTURED) && !defined(BSP_TEXTURED_NO_LIGHT)
+        /* Dynamic lights for this frame: the carried light when toggled, and
+         * the three nearest torches, shimmering. The torches' steady glow is
+         * already baked into the lightmaps; this only adds the flicker on
+         * top, so its amplitude stays small. */
+        {
+#ifdef BSP_DLIGHT_NONE
+            static unsigned carried_on = 0;
+            enum { torch_limit = 0 };
+#else
+            static unsigned carried_on = 1;
+            enum { torch_limit = 3 };
+#endif
+            static uint16_t flicker_state = 0x2a5b;
+#ifdef CAMERA_INPUT
+            if (pressed & KEY_SELECT) carried_on ^= 1u;
+#endif
+            flicker_state = (uint16_t)(flicker_state * 75u + 74u);
+            dlight_count = 0;
+            int32_t px = Q8_TO_INT(camera_x), py = Q8_TO_INT(camera_y);
+            int32_t pz = Q8_TO_INT(camera_z);
+            if (carried_on) {
+                dlights[dlight_count++] = (DynamicLight){
+                    px, py, pz, 200, 22};
+            }
+            /* Nearest torches by squared 2D distance, one shimmer phase
+             * each from the shared generator. */
+            for (unsigned pick = 0; pick < torch_limit; ++pick) {
+                int32_t best = 0x7fffffff;
+                int found = -1;
+                for (unsigned t = 0; t < BSP_TORCH_COUNT; ++t) {
+                    int taken = 0;
+                    for (unsigned j = carried_on ? 1 : 0; j < dlight_count; ++j)
+                        if (dlights[j].x == bsp_torches[t].x &&
+                            dlights[j].y == bsp_torches[t].y &&
+                            dlights[j].z == bsp_torches[t].z) taken = 1;
+                    if (taken) continue;
+                    int32_t dx = bsp_torches[t].x - px;
+                    int32_t dy = bsp_torches[t].y - py;
+                    int32_t distance2 = dx * dx + dy * dy;
+                    if (distance2 < best) { best = distance2; found = (int)t; }
+                }
+                if (found < 0 || best > 500 * 500) break;
+                unsigned shimmer = (flicker_state >> (3 * pick)) & 7u;
+                dlights[dlight_count++] = (DynamicLight){
+                    bsp_torches[found].x, bsp_torches[found].y,
+                    bsp_torches[found].z, 120, (int16_t)(6 + shimmer)};
+            }
+        }
+#endif
 #ifdef BSP_TEXTURED
         entity_camera_x = camera_x;
         entity_camera_y = camera_y;

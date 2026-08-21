@@ -172,7 +172,10 @@ static TextureVertex project_texture_vertex(const ClipTextureVertex *source)
  * never in the frame set. The offset is added in world space before the
  * rotate; texture coordinates and lightmaps ride along unchanged because
  * both were baked against the brush's own geometry. */
-static HOT void render_entity(unsigned index)
+/* ROM on purpose: IWRAM placement was measured at zero gain -- the heavy
+ * callees are out-of-line ROM copies either way -- and the space is stack
+ * headroom. */
+static __attribute__((noinline)) void render_entity(unsigned index)
 {
     const MapEntity *entity = &bsp_entities[index];
     int32_t offset_x = entity_offset_q8(index, 0);
@@ -205,6 +208,9 @@ static HOT void render_entity(unsigned index)
     int32_t camera_ix = Q8_TO_INT(entity_camera_x - offset_x + 128);
     int32_t camera_iy = Q8_TO_INT(entity_camera_y - offset_y + 128);
     int32_t camera_iz = Q8_TO_INT(entity_camera_z - offset_z + 128);
+#ifndef BSP_TEXTURED_NO_LIGHT
+    dlight_active = 0;
+#endif
     for (unsigned f = 0; f < entity->face_count; ++f) {
         unsigned face_index = entity->first_face + f;
         const MapFace *face = &bsp_faces[face_index];
@@ -272,6 +278,68 @@ static HOT void render_entity(unsigned index)
     }
 }
 
+#ifndef BSP_TEXTURED_NO_LIGHT
+/* Does any dynamic light reach this face? If so, project the strongest onto
+ * the face's plane and leave its texture-space position and strength in the
+ * dlight globals for the drawer's segment sampler.
+ *
+ * The projection is Quake's own: the perpendicular distance to the plane
+ * comes off the light's boost up front (a light two-thirds of its radius
+ * away from the plane can only graze it), and the in-plane position turns
+ * into texel coordinates through the same axes the face's texture uses, so
+ * the per-segment distance is two subtractions and two multiplies in a
+ * space the sampler already lives in. */
+/* noinline, and deliberately NOT in IWRAM: inlined into the hot renderer it
+ * grew IWRAM past the stack's minimum and the stack overflowed -- the third
+ * time this project has hit that wall. It runs once per drawn face and its
+ * cost from ROM is a few thousand cycles a frame. */
+static __attribute__((noinline)) void dlight_prepare(const RuntimeFace *face)
+{
+    dlight_active = 0;
+    if (!dlight_count) return;
+    const MapFace *source = &bsp_faces[face->source_face];
+    int32_t best = 0;
+    for (unsigned i = 0; i < dlight_count; ++i) {
+        const DynamicLight *light = &dlights[i];
+        /* Reach test on the bounding sphere first, one axis at a time with
+         * no multiplies; the plane projection below is 64-bit work. */
+        int32_t reach = light->radius + face->radius;
+        int32_t dx = face->center_x - light->x;
+        if (dx > reach || dx < -reach) continue;
+        int32_t dy = face->center_y - light->y;
+        if (dy > reach || dy < -reach) continue;
+        int32_t dz = face->center_z - light->z;
+        if (dz > reach || dz < -reach) continue;
+        int32_t perpendicular = (int32_t)
+            (((int64_t)face->nx * light->x + (int64_t)face->ny * light->y +
+              (int64_t)face->nz * light->z) >> 14) - face->distance;
+        if (perpendicular < 0) perpendicular = -perpendicular;
+        if (perpendicular >= light->radius) continue;
+        /* Falloff is quadratic in texel space; fold the perpendicular part
+         * into the base boost so the sampler only sees the 2D remainder.
+         * One texel at this mip is two world units. */
+        int32_t perp_texels = perpendicular >> 1;
+        int32_t boost = light->boost -
+            ((perp_texels * perp_texels) >> DLIGHT_FALLOFF_SHIFT);
+        if (boost <= best) continue;
+        const MapTexInfo *info = &bsp_texinfo[source->texinfo];
+        dlight_u_q8 = (int32_t)
+            (((int64_t)info->axis[0][0] * light->x +
+              (int64_t)info->axis[0][1] * light->y +
+              (int64_t)info->axis[0][2] * light->z +
+              (int64_t)info->axis[0][3]) >> 4) - source->u_base_q8;
+        dlight_v_q8 = (int32_t)
+            (((int64_t)info->axis[1][0] * light->x +
+              (int64_t)info->axis[1][1] * light->y +
+              (int64_t)info->axis[1][2] * light->z +
+              (int64_t)info->axis[1][3]) >> 4) - source->v_base_q8;
+        dlight_base_boost = boost;
+        best = boost;
+        dlight_active = 1;
+    }
+}
+#endif
+
 static HOT void render_textured_faces(void)
 {
     for (unsigned y = 0; y < SCREEN_HEIGHT; ++y)
@@ -286,6 +354,9 @@ static HOT void render_textured_faces(void)
         const RuntimeFace *face = &runtime_faces[frame_faces[accepted]];
         if (face->edge_count < 3) continue;
         uint16_t texture = face_texture(face);
+#ifndef BSP_TEXTURED_NO_LIGHT
+        dlight_prepare(face);
+#endif
         unsigned count = minimum(face->edge_count, CLIP_RING_MAX - 8);
         /* Resolve the vertex ring once. surfedge -> edge -> vertex is three
          * dependent loads across ROM and EWRAM, and the ring is walked twice

@@ -384,6 +384,16 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
                 round(maxs[0]), round(maxs[1]), round(maxs[2])))
         if kind == 3:
             teleport = block.get("target", "")
+    # Torch flames, for runtime flicker lights. The baked lightmaps already
+    # carry their static contribution; the dynamic pass only adds shimmer.
+    torch_values = []
+    for block in entity_blocks:
+        if "torch" in block.get("classname", "") or \
+           block.get("classname", "").startswith("light_flame"):
+            x, y, z = map(float, block["origin"].split())
+            torch_values.append(f"{{{round(x)}, {round(y)}, {round(z)}}}")
+    print(f"  {len(torch_values)} torches")
+
     teleport_to = (0.0, 0.0, 0.0)
     teleport_yaw = 0.0
     for block in entity_blocks:
@@ -408,6 +418,7 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
               f"    BSP_SPAWN_X = {round(spawn[0])}, BSP_SPAWN_Y = {round(spawn[1])},",
               f"    BSP_SPAWN_Z = {round(spawn[2])}, BSP_SPAWN_YAW = {round(angle * 256 / 360)},",
               f"    BSP_ENTITY_COUNT = {len(entity_values)},",
+              f"    BSP_TORCH_COUNT = {len(torch_values)},",
               f"    BSP_TELEPORT_X = {round(teleport_to[0])},",
               f"    BSP_TELEPORT_Y = {round(teleport_to[1])},",
               f"    BSP_TELEPORT_Z = {round(teleport_to[2])},",
@@ -538,6 +549,8 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
     emit(lines, "static const MapFace bsp_faces[BSP_FACE_COUNT]", face_values, 2)
     emit(lines, "static const MapEntity bsp_entities[BSP_ENTITY_COUNT]",
          entity_values, 1)
+    emit(lines, "static const MapVertex bsp_torches[BSP_TORCH_COUNT]",
+         torch_values, 6)
     print(f"  lightmap grid: {lmscale} units/luxel, {len(luxel_bytes)} luxel bytes "
           f"({len(luxel_cache)} distinct blocks), shift {luxel_shift}, "
           f"{luxels_out_of_range} vertices outside their block")

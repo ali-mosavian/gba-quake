@@ -551,6 +551,11 @@ void draw_textured_polygon_reference(
      * through a pointer, and the segment loop below would repeat them. */
     const int32_t luxel_base = face_light->base;
     const int32_t luxel_width = face_light->width;
+    /* The per-face dynamic light stays in its globals on purpose: copied to
+     * locals, four more values live across the whole drawer pushed real work
+     * into spills -- the same register-pressure failure the span
+     * specialisation and the segment-finish function both hit. The segment
+     * loop loads one flag; only lit faces touch the rest. */
 #endif
     /* Row offset without a multiply.
      *

@@ -51,6 +51,15 @@ typedef struct {
  * where affine texture error stops being static and starts crawling as the
  * camera moves -- the artefact this renderer has already paid twice to
  * remove. It stays a knob, not the default. */
+/* Quadratic falloff for dynamic lights: rows lost per squared texel of
+ * distance is 1 >> this. 8 puts a 22-row light at zero around 75 texels
+ * (150 world units) out -- tuned against the eye height: the nearest floor
+ * the camera can see is already ~33 texels from the carried light's
+ * projection point, and at shift 7 most of the boost was spent before any
+ * visible pixel. */
+#ifndef DLIGHT_FALLOFF_SHIFT
+#define DLIGHT_FALLOFF_SHIFT 8
+#endif
 #ifndef BSP_AFFINE_DIVISOR
 #define BSP_AFFINE_DIVISOR 8
 #endif
@@ -226,6 +235,23 @@ IWRAM_DATA static uint8_t logical_framebuffer[SCREEN_WIDTH * SCREEN_HEIGHT];
  * set, because no leaf references a submodel's faces. */
 static int32_t entity_camera_x, entity_camera_y, entity_camera_z;
 static int32_t entity_camera_sine, entity_camera_cosine;
+#ifndef BSP_TEXTURED_NO_LIGHT
+/* Dynamic lights: a handful of point sources whose contribution is added to
+ * the baked shade row at sample time. Positions in whole world units. */
+enum { DLIGHT_MAX = 4 };
+typedef struct {
+    int32_t x, y, z;
+    int16_t radius;               /* world units; contribution ends here */
+    int16_t boost;                /* shade rows added at zero distance */
+} DynamicLight;
+static DynamicLight dlights[DLIGHT_MAX];
+static unsigned dlight_count;
+/* Per-face result of projecting the strongest nearby light onto the face's
+ * texture plane, consumed by the drawer. Texel space, mip level's units. */
+static int32_t dlight_u_q8, dlight_v_q8;
+static int32_t dlight_base_boost;         /* boost minus the perp falloff */
+static int32_t dlight_active;
+#endif
 #endif
 
 static uint16_t candidate_face_count, frame_edge_count, frame_vertex_count;

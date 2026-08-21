@@ -48,9 +48,26 @@
                 unsigned luxel_index = (unsigned)(
                     luxel_base + (((v + v1) >> (BSP_LUXEL_SHIFT + 1)) * luxel_width) +
                                  (((u + u1) >> (BSP_LUXEL_SHIFT + 1))));
+                unsigned shade_index =
+                    bsp_lightmap_luxels[luxel_index & BSP_LUXEL_MASK];
+                /* Dynamic light: the projected light's texture-space position
+                 * arrived with the face; the segment adds a quadratic-falloff
+                 * boost to the baked row. Inactive faces pay one register
+                 * test. Sampled at the same midpoint as the luxel, in texels:
+                 * the >> 9 folds the sum-of-endpoints halving into the Q8
+                 * drop. */
+                if (dlight_active) {
+                    int32_t across = ((u + u1) >> 9) - (dlight_u_q8 >> 8);
+                    int32_t along = ((v + v1) >> 9) - (dlight_v_q8 >> 8);
+                    int32_t boost = dlight_base_boost -
+                        ((across * across + along * along) >> DLIGHT_FALLOFF_SHIFT);
+                    if (boost > 0) {
+                        shade_index += (unsigned)boost;
+                        if (shade_index > 63) shade_index = 63;
+                    }
+                }
                 const uint8_t *const shade_row =
-                    shade_table +
-                    ((unsigned)bsp_lightmap_luxels[luxel_index & BSP_LUXEL_MASK] << 8);
+                    shade_table + (shade_index << 8);
 #endif
 #if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH)
                 /* Nearest texel, with Hecker's direction-stable tie break.

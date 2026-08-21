@@ -39,6 +39,16 @@ view (the drawbridge); ~1,741K where no mover is visible. 30 FPS is 559,333.
 | `angle` variable shadowed the spawn yaw in the extractor | BSP_SPAWN_YAW came out 0; every measurement against that header was of a different scene |
 | Cost | **+151K when movers are visible, ~0 otherwise.** The clip/project helpers run as out-of-line ROM-ARM copies for the entity path; inlining them into IWRAM would spend stack headroom already at 4.7K |
 
+### Dynamic lighting
+| aspect | outcome |
+|---|---|
+| Quake's projection: light onto the face plane, falloff in texture space | per-segment cost is two subtractions, two multiplies, a shift |
+| Perpendicular falloff folded into a per-face base boost | the sampler sees only the 2D remainder |
+| Sources: carried light (SELECT toggles) + 3 nearest torches, shimmering | torch steady glow is already baked; dynamic adds only flicker |
+| Falloff tuned against eye height | at shift 7 the boost was spent before the nearest visible floor pixel (~33 texels from the projection point); shift 8, boost 22 reaches ~75 texels |
+| Copying the per-face light state into drawer locals | +75K of spills -- fourth instance of the shared-live-state trap; the state stays in globals, one flag load per segment |
+| Cost | **+54K infrastructure, ~+105K with the carried light active at the spawn** (8.9 -> 8.2 FPS worst case) |
+
 ## Rejected
 
 ### Row and scan conversion
