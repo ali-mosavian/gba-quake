@@ -62,6 +62,8 @@ enum {
     KEY_LEFT = 1u << 5,
     KEY_UP = 1u << 6,
     KEY_DOWN = 1u << 7,
+    KEY_R = 1u << 8,
+    KEY_L = 1u << 9,
 };
 
 #endif

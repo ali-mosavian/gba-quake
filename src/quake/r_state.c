@@ -63,6 +63,10 @@ typedef struct {
      * build time so the runtime never walks surfedge -> edge -> vertex. */
     int32_t first_vertex;
 } MapFace;
+/* Clip-hull node. qbsp pre-expands hull 1 by the 32x32x56 player box, so the
+ * player traces through it as a single point. Negative children are contents,
+ * not node indices. */
+typedef struct { int32_t plane; int16_t children[2]; } MapClipNode;
 typedef struct { int32_t axis[2][4]; uint16_t texture; } MapTexInfo;
 typedef struct { uint32_t offset; uint16_t width, height; } MapTexture;
 typedef struct { int16_t contents; int32_t visibility; uint16_t first_mark, mark_count; } MapLeaf;
@@ -141,6 +145,8 @@ static uint16_t trivial_accept_count, trivial_reject_count;
 static uint16_t degenerate_face_count;
 /* Render-pass work counters, so span setup and texel cost can be told apart. */
 static uint32_t drawn_face_count, drawn_row_count, drawn_span_count;
+/* How often the step-up branch of walk_move actually won. */
+static uint32_t steps_climbed;
 static uint32_t pixel_iteration_count, texel_sample_count;
 static uint32_t span_clear_count, span_hidden_count, span_mixed_count;
 static uint32_t texture_rom_fallbacks, near_clipped_faces;
@@ -161,6 +167,11 @@ typedef struct {
     uint32_t pixel_iterations, texel_samples;
     uint32_t spans_clear, spans_hidden, spans_mixed;
     uint32_t rom_fallbacks, cache_bytes, near_clipped_faces;
+    int32_t player_x, player_y, player_z, player_velocity_z;
+    uint32_t player_on_ground, player_substeps;
+    int32_t player_contents;
+    uint32_t player_solid_frames;
+    uint32_t steps_climbed;
 } BspProfile;
 EWRAM volatile BspProfile bsp_profile;
 

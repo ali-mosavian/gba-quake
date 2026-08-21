@@ -7,6 +7,7 @@
 #include "r_state.c"
 #include "r_bsp.c"
 #include "r_clip.c"
+#include "p_move.c"
 #include "d_draw.c"
 #ifdef BSP_TEXTURED
 #include "d_scan.c"

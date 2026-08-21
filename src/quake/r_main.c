@@ -1,19 +1,35 @@
 /* Input, frame scheduling, profiling, page expansion, and the renderer entry. */
-#ifndef BSP_AUTO_WALK
 #define CAMERA_INPUT 1
-#endif
+static __attribute__((unused)) uint32_t last_substeps;
+/* Invariant check: the player origin must never be inside solid. */
+static uint32_t solid_frames;
+static int32_t player_contents_now;
 static uint16_t read_keys(void) { return (uint16_t)(~REG_KEYINPUT) & 0x03ff; }
 
 #ifdef CAMERA_INPUT
-static void update_camera(uint16_t keys, int32_t *x, int32_t *y, uint8_t *yaw)
+/* Physics runs at a fixed 64 Hz regardless of how long a frame took, so the
+ * player moves and falls at the same rate whether the view is cheap or
+ * expensive. The renderer's own cycle count gives the elapsed time: one
+ * substep per 262144 cycles is 64 Hz on a 16.78 MHz clock. */
+static void update_player(Player *player, uint16_t keys, uint16_t pressed,
+                          uint32_t frame_cycles)
 {
-    if (keys & KEY_LEFT) *yaw -= 2;
-    if (keys & KEY_RIGHT) *yaw += 2;
-    int forward = (keys & KEY_UP ? 2 : 0) - (keys & KEY_DOWN ? 2 : 0);
-    int strafe = (keys & KEY_A ? -2 : 0) + (keys & KEY_B ? 2 : 0);
-    int sine = sine_q14[*yaw], cosine = sine_q14[(uint8_t)(*yaw + 64)];
-    *x += (forward * cosine - strafe * sine) >> 6;
-    *y += (forward * sine + strafe * cosine) >> 6;
+    if (keys & KEY_LEFT) player->yaw -= 2;
+    if (keys & KEY_RIGHT) player->yaw += 2;
+
+    int forward = (keys & KEY_UP ? 1 : 0) - (keys & KEY_DOWN ? 1 : 0);
+    int strafe = (keys & KEY_B ? 1 : 0) - (keys & KEY_A ? 1 : 0);
+    int sine = sine_q14[player->yaw];
+    int cosine = sine_q14[(uint8_t)(player->yaw + 64)];
+    int32_t wish_x = forward * cosine - strafe * sine;
+    int32_t wish_y = forward * sine + strafe * cosine;
+
+    unsigned substeps = frame_cycles >> 18;
+    if (substeps < 1) substeps = 1;
+    if (substeps > 8) substeps = 8;      /* never spiral after a slow frame */
+    last_substeps = substeps;
+    for (unsigned step = 0; step < substeps; ++step)
+        player_step(player, wish_x, wish_y, (pressed & KEY_R) != 0);
 }
 #endif
 
@@ -25,10 +41,18 @@ static void wait_for_vblank(void)
 
 int main(void)
 {
-    int32_t camera_x = Q8_FROM_INT(BSP_SPAWN_X);
-    int32_t camera_y = Q8_FROM_INT(BSP_SPAWN_Y);
-    int32_t camera_z = Q8_FROM_INT(BSP_SPAWN_Z) + EYE_HEIGHT_Q8;
-    uint8_t yaw = BSP_SPAWN_YAW;
+    /* The spawn entity's origin is the player origin; the eye sits above it. */
+    Player player;
+    player.position.x = Q8_FROM_INT(BSP_SPAWN_X);
+    player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
+    player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
+    player.velocity.x = player.velocity.y = player.velocity.z = 0;
+    player.yaw = BSP_SPAWN_YAW;
+    player.on_ground = 0;
+    int32_t camera_x = player.position.x;
+    int32_t camera_y = player.position.y;
+    int32_t camera_z = player.position.z + EYE_HEIGHT_Q8;
+    uint8_t yaw = player.yaw;
     unsigned visible_page = 0;
     uint16_t previous_keys = 0;
     for (unsigned i = 0; i < BSP_VERTEX_COUNT; ++i) runtime_vertices[i] = bsp_vertices[i];
@@ -51,26 +75,38 @@ int main(void)
 
     for (;;) {
 #ifdef BSP_AUTO_WALK
-        /* Deterministic camera path. Keeps motion tests and cycle
-         * measurements reproducible frame for frame, which manual input
-         * cannot be. */
+        /* Deterministic input rather than a deterministic camera: this drives
+         * the same physics the player does, so a run exercises collision,
+         * gravity and step climbing and is still reproducible frame for
+         * frame. Walk forward, then turn, repeatedly. */
         {
             static uint32_t walk_frame;
             uint32_t step = walk_frame++;
-            camera_x = Q8_FROM_INT(BSP_SPAWN_X);
-            camera_y = Q8_FROM_INT(BSP_SPAWN_Y) + Q8_FROM_INT((int32_t)(step % 96));
-            yaw = (uint8_t)(BSP_SPAWN_YAW + (step / 96) * 8);
-            if (step % 96 == 0) cached_camera_leaf = INVALID_LEAF;
+            uint16_t scripted = (step % 128 < 96) ? KEY_UP : KEY_RIGHT;
+            update_player(&player, scripted, 0, bsp_profile.total_cycles);
+            camera_x = player.position.x;
+            camera_y = player.position.y;
+            camera_z = player.position.z + EYE_HEIGHT_Q8;
+            yaw = player.yaw;
         }
 #endif
         uint16_t keys = read_keys(), pressed = keys & (uint16_t)~previous_keys;
         previous_keys = keys;
 #ifndef BSP_AUTO_WALK
         if (pressed & KEY_START) {
-            camera_x = Q8_FROM_INT(BSP_SPAWN_X);
-            camera_y = Q8_FROM_INT(BSP_SPAWN_Y);
-            yaw = BSP_SPAWN_YAW; cached_camera_leaf = INVALID_LEAF;
-        } else update_camera(keys, &camera_x, &camera_y, &yaw);
+            player.position.x = Q8_FROM_INT(BSP_SPAWN_X);
+            player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
+            player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
+            player.velocity.x = player.velocity.y = player.velocity.z = 0;
+            player.yaw = BSP_SPAWN_YAW;
+            cached_camera_leaf = INVALID_LEAF;
+        } else {
+            update_player(&player, keys, pressed, bsp_profile.total_cycles);
+        }
+        camera_x = player.position.x;
+        camera_y = player.position.y;
+        camera_z = player.position.z + EYE_HEIGHT_Q8;
+        yaw = player.yaw;
 #else
         (void)pressed;
 #endif
@@ -125,12 +161,24 @@ int main(void)
             pixel_iteration_count, texel_sample_count,
             span_clear_count, span_hidden_count, span_mixed_count,
 #if defined(BSP_TEXTURED) && !defined(BSP_TEXTURED_SOLID)
-            texture_rom_fallbacks, texture_cache_used, near_clipped_faces
+            texture_rom_fallbacks, texture_cache_used, near_clipped_faces,
 #else
-            0, 0, 0
+            0, 0, 0,
+#endif
+#ifdef CAMERA_INPUT
+            player.position.x, player.position.y, player.position.z,
+            player.velocity.z, player.on_ground, last_substeps,
+            player_contents_now, solid_frames, steps_climbed
+#else
+            0, 0, 0, 0, 0, 0, 0, 0, 0
 #endif
         };
 
+#ifdef CAMERA_INPUT
+        player_contents_now = hull_point_contents(BSP_PLAYER_HULL_HEAD,
+                                                  player.position);
+        if (player_contents_now == CONTENTS_SOLID) ++solid_frames;
+#endif
         wait_for_vblank();
         visible_page = draw_page;
         REG_DISPCNT = DISPLAY_MODE_4 | DISPLAY_BG2 |

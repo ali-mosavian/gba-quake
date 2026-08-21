@@ -5,6 +5,7 @@ import math, pathlib, re, struct, sys
 
 ENTITIES, PLANES, TEXTURES, VERTICES, VISIBILITY = 0, 1, 2, 3, 4
 NODES, TEXINFO, FACES, LEAVES, MARKSURFACES, EDGES, SURFEDGES = 5, 6, 7, 10, 11, 12, 13
+CLIPNODES, MODELS = 9, 14
 
 def records(data, lump, fmt):
     size = struct.calcsize(fmt); offset, length = lump
@@ -165,6 +166,10 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
     faces = records(data, lumps[FACES], "<hhihh4Bi")
     texinfo = records(data, lumps[TEXINFO], "<8fii")
     leaves = records(data, lumps[LEAVES], "<ii3h3h2H4B")
+    # Collision uses the pre-expanded clip hull, so the player traces as a
+    # point: qbsp already grew hull 1's clipnodes by the 32x32x56 player box.
+    clipnodes = records(data, lumps[CLIPNODES], "<i2h")
+    models = records(data, lumps[MODELS], "<9f4i3i")
     marks = [x[0] for x in records(data, lumps[MARKSURFACES], "<H")]
     vo, vs = lumps[VISIBILITY]; visibility = data[vo:vo + vs]
     to, ts = lumps[TEXTURES]; texture_lump = data[to:to + ts]
@@ -232,7 +237,9 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
               ("PLANE", planes), ("NODE", nodes), ("FACE", faces),
               ("LEAF", leaves), ("MARKSURFACE", marks)]
     lines += [f"    BSP_{name}_COUNT = {len(values)}," for name, values in counts]
-    lines += [f"    BSP_VISIBILITY_BYTES = {len(visibility)},",
+    lines += [f"    BSP_CLIPNODE_COUNT = {len(clipnodes)},",
+              f"    BSP_PLAYER_HULL_HEAD = {models[0][10]},",
+              f"    BSP_VISIBILITY_BYTES = {len(visibility)},",
               f"    BSP_SPAWN_X = {round(spawn[0])}, BSP_SPAWN_Y = {round(spawn[1])},",
               f"    BSP_SPAWN_Z = {round(spawn[2])}, BSP_SPAWN_YAW = {round(angle * 256 / 360)},", "};"]
     emit(lines, "static const MapVertex bsp_vertices[BSP_VERTEX_COUNT]",
@@ -241,6 +248,13 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
     emit(lines, "static const int16_t bsp_surfedges[BSP_SURFEDGE_COUNT]", [str(x) for x in surfedges], 16)
     emit(lines, "static const MapPlane bsp_planes[BSP_PLANE_COUNT]",
          [f"{{{round(x*16384)}, {round(y*16384)}, {round(z*16384)}, {round(d)}}}" for x,y,z,d,_ in planes], 3)
+    # Rendering rounds plane distances to whole units, which is invisible on a
+    # 120x80 screen but would let the player sink or float by up to half a
+    # unit. Collision gets the distance at Q8 instead.
+    emit(lines, "static const int32_t bsp_plane_distance_q8[BSP_PLANE_COUNT]",
+         [str(round(d * 256)) for _, _, _, d, _ in planes], 8)
+    emit(lines, "static const MapClipNode bsp_clipnodes[BSP_CLIPNODE_COUNT]",
+         [f"{{{planenum}, {{{c0}, {c1}}}}}" for planenum, c0, c1 in clipnodes], 4)
     emit(lines, "static const MapNode bsp_nodes[BSP_NODE_COUNT]",
          [f"{{{node[0]}, {{{node[1]}, {node[2]}}}, {node[9]}, {node[10]}}}" for node in nodes], 4)
     # Quantised texture axes, matching what the GBA reads at runtime. Face

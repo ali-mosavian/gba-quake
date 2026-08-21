@@ -769,6 +769,46 @@ build**: it encodes the old `TextureVertex` layout and the saturating
 reciprocal table. `bsp_textured` runs the corrected C kernel from IWRAM until
 that routine is rewritten against the new math.
 
+## Player movement
+
+`src/quake/p_move.c` follows Quake's own physics: `SV_RecursiveHullCheck` for
+tracing, `SV_FlyMove` for sliding, `SV_WalkMove` for step climbing.
+
+The map's hull 1 clipnodes were already expanded by qbsp for the 32x32x56
+player box, so the player traces through them as a *point* and no box sweeping
+is needed at runtime. That is also why the player comes to rest at exactly
+z = 24 on a floor at z = 0: the expanded hull puts the solid boundary an
+origin-height above the real surface.
+
+Everything is Q8 world units. Positions share the camera's existing
+coordinates; velocities are Q8 units per second and integrate at a fixed 64 Hz
+substep, which makes the per-step position delta a shift rather than a divide
+and keeps movement independent of the frame rate. The substep count comes from
+the renderer's own measured cycles -- one step per 262144 cycles is 64 Hz on a
+16.78 MHz clock -- clamped to 8 so a slow frame cannot spiral.
+
+Two details differ from Quake and are deliberate:
+
+- Collision planes use a Q8 distance from `bsp_plane_distance_q8[]`, not the
+  renderer's whole-unit one. Half a unit is invisible on a 120x80 screen but
+  would let the player sink into floors.
+- Friction is exponential, `v *= (1 - k)`, rather than Quake's ramp against a
+  stop speed. It matches the same 4/second decay and needs neither a square
+  root nor a divide. Walk speed is clamped with an octagonal length
+  approximation for the same reason.
+
+Verified on target rather than by inspection. `bsp_textured_walk` drives the
+same physics the player does from scripted input, so a run exercises collision,
+gravity and stepping reproducibly. Over a 25-second scripted walk into walls:
+the origin is never inside solid (`player_solid_frames` 0, contents always
+CONTENTS_EMPTY), forward motion stops dead against walls, the player rests at
+the spawn height with zero vertical velocity, and the step-up branch of
+`walk_move` is exercised.
+
+Controls: D-pad turns and walks, A and B strafe, R jumps, Start respawns.
+
+Costs 2,385 cycles a frame, about 0.2%.
+
 ## Assumptions being tested
 
 1. BG2PA/BG2PC are sampled during a scanline rather than latched only at its start.

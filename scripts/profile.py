@@ -31,6 +31,9 @@ FIELDS = [
     ("pixel_iterations", "I"), ("texel_samples", "I"),
     ("spans_clear", "I"), ("spans_hidden", "I"), ("spans_mixed", "I"),
     ("rom_fallbacks", "I"), ("cache_bytes", "I"), ("near_clipped_faces", "I"),
+    ("player_x", "i"), ("player_y", "i"), ("player_z", "i"),
+    ("player_velocity_z", "i"), ("player_on_ground", "I"), ("player_substeps", "I"),
+    ("player_contents", "i"), ("player_solid_frames", "I"), ("steps_climbed", "I"),
 ]
 LAYOUT = "<" + "".join(code for _, code in FIELDS[:19]) + "2x" + "".join(code for _, code in FIELDS[19:])
 
