@@ -548,13 +548,13 @@ progressively remove stages so the cost ladder can be attributed.
 At the `dm1` spawn, with the corrected texturing:
 
 ```text
-total                    1,189,031 cycles     14.11 FPS
-  clear                        3,970     0.3%
-  BSP/PVS rebuild              5,876     0.5%
-  face culling               113,382     9.5%
-  vertex transform            69,681     5.9%
-  textured rendering         937,967    78.9%
-  2x expansion                58,131     4.9%
+total                    1,009,646 cycles     16.62 FPS
+  clear                        3,970     0.4%
+  BSP/PVS rebuild              5,876     0.6%
+  face culling                66,242     6.6%
+  vertex transform            69,681     6.9%
+  textured rendering         805,700    79.8%
+  2x expansion                58,131     5.8%
 ```
 
 The work counters explain the shape of that number:
@@ -667,6 +667,60 @@ Measured and reverted:
   the clearest evidence that the bottleneck is per-face, not per-row.
 - Hoisting the texinfo lookup out of the per-vertex loop: 0.26%, below the 1%
   retention threshold; kept only because it simplifies the face interface.
+
+### The BSP and geometry side
+
+Splitting the front end with `bsp_textured_nopoly` and `bsp_textured_nograd`
+showed the per-face work was not where it looked. Retained, each measured:
+
+- **Near-clip fast path**: the front end walked the vertex ring three times,
+  copying camera+uv, then the clip ring, then the projection -- 68 bytes of
+  struct traffic per vertex. Only 4 of 122 faces at the spawn actually cross
+  the near plane, so the other 118 now project straight into the output ring:
+  **-44.5K**.
+- **The widest-spread triple ranked in 32-bit**: it was computing every
+  candidate's cross product at Q8 in 64-bit purely to compare magnitudes, at
+  591 cycles a face -- more than the six gradient solves it feeds. Ranking in
+  clamped whole pixels and computing only the winner's determinant at full
+  precision: **-45.9K**.
+- **No libgcc CLZ**: `divide_s64_s32` used `__builtin_clz`, which on ARMv4T is
+  a call to `__clzsi2` -- a Thumb routine in ROM reached from ARM code in IWRAM
+  through an interworking branch -- once per polygon edge. An inlined bit
+  ladder removes it: **-29.7K**. It no longer appears in the link map.
+- **Integer-unit culling**: both tests are conservative bounding-sphere
+  rejections, so the camera's sub-unit position cannot change them once it is
+  rounded rather than truncated. Every product then fits 32 bits: **-14.6K**.
+- **Side folded into the stored normal** at leaf-cache rebuild, making the
+  back-face test one sign check with no branch and no extra load: **-10.9K**.
+- **Explicit per-face vertex ring emitted offline**: a face's vertices were
+  otherwise reached through surfedge -> edge -> vertex, three dependent loads
+  walked twice per frame. `bsp_face_vertices[]` gives one ROM halfword per
+  vertex: **-32.3K**, and it retires `frame_edges`, `edge_stamp` and
+  `runtime_edges` from the textured build, freeing about 23KB of EWRAM.
+
+Measured and reverted:
+
+- **Scan conversion by two chains walked around the ring.** A convex face has
+  exactly two edges crossing any row, so the walker array and its per-row scan
+  over every edge is O(rows x edges) where a chain walk is O(rows + edges).
+  Implemented twice -- once with the chains live through the texturing loop
+  (**+176K**) and once decoupled through a per-face row table to rule out
+  register pressure (**+186K**). Both bit-exact, both decisively slower. Faces
+  average 8.8 rows and 5 edges, so there is nothing for a per-row state machine
+  to amortise, while the naive scan stays a tight register-resident loop. This
+  is the third restructuring of the row loop to lose, after the active-edge
+  sweep; the tiny-face workload is the reason every time.
+
+### Offline face merging
+
+`scripts/` does not do this, but it was measured. Merging edge-adjacent
+coplanar same-texture faces has an upper bound of **53.9%** fewer faces on
+dm1. Requiring the merged polygon to stay convex -- which the scanline fill
+needs, since it takes min/max x per row -- cuts that to **12.2%** (2,283 ->
+2,005 faces, ring vertices 11,374 -> 9,554). Merged faces would also have to
+be re-referenced from every leaf whose marksurfaces pointed at their parts,
+which can raise the per-leaf candidate count and give some of it back. Worth
+perhaps 30-40K against that complexity; not taken.
 
 ### What 30 FPS would take
 
