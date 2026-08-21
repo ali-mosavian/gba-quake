@@ -80,6 +80,14 @@ int main(void)
     unsigned frame_index = INITIAL_FRAME;
     unsigned pose_hold_count = 0;
 
+#ifdef QUAD_EXACT
+    /* The exact feeder stages each line's 196-byte record out of cartridge
+     * ROM during the previous line. At the BIOS default 4/2 wait states that
+     * copy is ~2x slower and can miss the line on real hardware; mGBA is
+     * lenient about it. The polled variants stay at the default so they keep
+     * matching the observation log. */
+    REG_WAITCNT = WAITCNT_FAST_ROM;
+#endif
     configure_affine_background();
 
 #if !defined(QUAD_STAGED) && !defined(QUAD_EXACT)
