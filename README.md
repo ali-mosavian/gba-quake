@@ -876,6 +876,44 @@ oblique -- less than the test each additional case would charge every span.
 Weakening the condition from `dv == 0` to "crosses no boundary across the run"
 was also measured, and moved the oblique pose from 120 texels to 143.
 
+### Whole-face affine for low-drift faces
+
+The per-segment machinery exists because affine texture error grows with how
+much 1/z changes across a run. When 1/z barely changes across a face's entire
+screen bounding box -- a distant face, a small one, one nearly facing the
+camera -- the whole face is one affine patch, and every per-segment correction
+it would have paid for collapses into two multiplies per segment.
+
+The classifier reuses the drift the interval selection already computes:
+affine when `|dinv/dx|*W + |dinv/dy|*H < inv / BSP_AFFINE_DIVISOR`. At the
+default divisor of 8 the deviation from true perspective is quadratic in a
+12.5% depth bound -- about half a texel on a face spanning 256 texels. The
+gradients come from three perspective corrections at the bbox corners, held in
+Q16 cursors so 80 rows of accumulation shed nothing visible.
+
+**-0.6% to -8.3% across the six fixed yaws** against the carry build, a win at
+every pose (spawn 1,793,672 -> 1,740,274). Frames differ from the perspective
+build by at most 48/255 per pixel at divisor 8; nothing visible side by side.
+
+Three findings that took measurement to get right:
+
+- **Sharing the segment-finish code as a function cost +2.8% to +3.5%** on the
+  poses where affine never fires: eighteen always-inline parameters pushed the
+  perspective path's values through the stack. As a textual include
+  (`d_segment_finish.inc`), each row loop's copy allocates registers against
+  its own live state and the overhead vanishes. Same lesson as the span
+  specialisation: shared state across a hot branch is what kills.
+- **Gating small faces out was wrong.** The theory said the setup (three plane
+  evaluations, six corrections, four long divides) needs six segments to
+  amortise; measured, the gate cost 1.5% because the bit-ladder divides are
+  cheap on the small quotients tiny faces produce. `BSP_AFFINE_MIN_AREA`
+  defaults to off.
+- **Divisor 4 is 2.1% faster on average and its stills are clean**, but its
+  bound admits a 25% depth change across a face, which is the regime where
+  affine error stops being static and starts crawling as the camera moves --
+  the artefact this renderer has already paid twice to remove. It stays a
+  knob.
+
 ### Carrying the perspective correction across segments
 
 Each drawing segment used to correct perspective at both of its own ends --

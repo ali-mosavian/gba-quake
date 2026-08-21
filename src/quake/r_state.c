@@ -42,6 +42,27 @@ typedef struct {
 
 /* Added to the map's spawn yaw, in Q8 turns: 16384 is a quarter turn. Used to
  * benchmark the same scene from a different angle without the scripted walk. */
+/* A face whose 1/z changes by less than 1/BSP_AFFINE_DIVISOR across its whole
+ * screen bounding box is drawn as one affine patch, skipping every per-segment
+ * perspective correction. The deviation from true perspective is quadratic in
+ * the bound: at 8, a face spanning 256 texels deviates about half a texel.
+ * 4 was measured 2.1% faster on average and its still frames are clean, but
+ * its bound admits a 25% depth change across a face, which is the regime
+ * where affine texture error stops being static and starts crawling as the
+ * camera moves -- the artefact this renderer has already paid twice to
+ * remove. It stays a knob, not the default. */
+#ifndef BSP_AFFINE_DIVISOR
+#define BSP_AFFINE_DIVISOR 8
+#endif
+/* Screen bbox area, in pixels, below which a face stays on the per-segment
+ * path. The obvious theory -- the affine setup costs about six segment
+ * corrections, so tiny faces should not qualify -- measured wrong: gating at
+ * 256 cost about 1.5% at most poses, because the bit-ladder divides in the
+ * setup are cheap on the small quotients tiny faces produce and even a
+ * two-segment face profits. Kept as a knob, defaulted to off. */
+#ifndef BSP_AFFINE_MIN_AREA
+#define BSP_AFFINE_MIN_AREA 1
+#endif
 /* Multiplies every face's culling radius; 1 is the real geometry. */
 #ifndef BSP_RADIUS_SCALE
 #define BSP_RADIUS_SCALE 1
