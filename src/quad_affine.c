@@ -6,8 +6,9 @@
 
 extern void raster_cube_frame(const QuadScanline *scanlines);
 extern void raster_staged_frame(const QuadScanline *scanlines);
+extern void raster_exact_frame(const QuadScanline *scanlines);
 
-#ifndef QUAD_STAGED
+#if !defined(QUAD_STAGED) && !defined(QUAD_EXACT)
 /* The older path reads a mutable frame from EWRAM during HDraw. It remains as
  * a comparison for the staged path, whose visible-period reads are all IWRAM. */
 __attribute__((section(".ewram"), aligned(4)))
@@ -81,7 +82,7 @@ int main(void)
 
     configure_affine_background();
 
-#ifndef QUAD_STAGED
+#if !defined(QUAD_STAGED) && !defined(QUAD_EXACT)
     copy_frame_to_ewram(frame_index);
 #endif
 
@@ -92,13 +93,15 @@ int main(void)
             pose_hold_count = 0;
 #ifndef QUAD_STATIC
             frame_index = (frame_index + 1) % QUAD_FRAME_COUNT;
-#ifndef QUAD_STAGED
+#if !defined(QUAD_STAGED) && !defined(QUAD_EXACT)
             copy_frame_to_ewram(frame_index);
 #endif
 #endif
         }
 
-#ifdef QUAD_STAGED
+#if defined(QUAD_EXACT)
+        raster_exact_frame(quad_frames[frame_index].scanlines);
+#elif defined(QUAD_STAGED)
         raster_staged_frame(quad_frames[frame_index].scanlines);
 #else
         while (REG_VCOUNT != 0) {}

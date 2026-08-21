@@ -1,8 +1,8 @@
 PROJECT := gba-affine-raster-lab
 BUILD := build
 ASM_OBJECTS := $(BUILD)/r_math_arm.o $(BUILD)/d_frame_arm.o \
-	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o
-TESTS := floor_mode7 bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
+	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o $(BUILD)/r_exact_arm.o
+TESTS := floor_mode7 bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged quad_affine_exact quad_affine_exact_static
 DKP_IMAGE ?= devkitpro/devkitarm:latest
 
 DEVKITARM ?= /opt/devkitpro/devkitARM
@@ -167,6 +167,12 @@ $(BUILD)/quad_affine_static.o: src/quad_affine.c src/generated/quad_affine_frame
 $(BUILD)/quad_affine_staged.o: src/quad_affine.c src/generated/quad_affine_frames.h | $(BUILD)
 	$(CC) $(CFLAGS) -DQUAD_STAGED=1 -c $< -o $@
 
+$(BUILD)/quad_affine_exact.o: src/quad_affine.c src/generated/quad_affine_frames.h | $(BUILD)
+	$(CC) $(CFLAGS) -DQUAD_EXACT=1 -c $< -o $@
+
+$(BUILD)/quad_affine_exact_static.o: src/quad_affine.c src/generated/quad_affine_frames.h | $(BUILD)
+	$(CC) $(CFLAGS) -DQUAD_EXACT=1 -DQUAD_STATIC=1 -c $< -o $@
+
 $(BUILD)/quad_reference.o: src/quad_reference.c src/generated/quad_reference_frames.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -180,6 +186,9 @@ $(BUILD)/r_bsp_arm.o: src/asm/r_bsp_arm.S | $(BUILD)
 	$(CC) -mcpu=arm7tdmi -marm -mthumb-interwork -g -c $< -o $@
 
 $(BUILD)/r_affine_arm.o: src/asm/r_affine_arm.S | $(BUILD)
+	$(CC) -mcpu=arm7tdmi -marm -mthumb-interwork -g -c $< -o $@
+
+$(BUILD)/r_exact_arm.o: src/asm/r_exact_arm.S | $(BUILD)
 	$(CC) -mcpu=arm7tdmi -marm -mthumb-interwork -g -c $< -o $@
 
 $(BUILD)/d_span_arm.o: src/asm/d_span_arm.S | $(BUILD)
