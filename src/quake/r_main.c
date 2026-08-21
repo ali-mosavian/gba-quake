@@ -12,6 +12,54 @@ static uint16_t read_keys(void) { return (uint16_t)(~REG_KEYINPUT) & 0x03ff; }
  * player moves and falls at the same rate whether the view is cheap or
  * expensive. The renderer's own cycle count gives the elapsed time: one
  * substep per 262144 cycles is 64 Hz on a 16.78 MHz clock. */
+
+#if defined(BSP_TEXTURED) && !defined(BSP_NO_FPS_COUNTER)
+/* Frames per second, drawn into the logical framebuffer's top-left corner
+ * before the expand, so it costs one timer read and a few dozen byte stores.
+ *
+ * The rate comes from timer 3, the free-running 16384Hz wall clock the
+ * physics step already keeps; reading it here does not disturb that. Shown
+ * as tenths ("9.6") because the interesting differences in this renderer are
+ * fractions of a frame. A four-frame moving sum smooths the display without
+ * hiding real changes.
+ */
+static void draw_fps_counter(void)
+{
+    /* 3x5 digit glyphs, one row per 3 bits, top row in the low bits. */
+    static const uint16_t glyphs[10] = {
+        075557, 022222, 071747, 071717, 055711,
+        074717, 074757, 071111, 075757, 075717,
+    };
+    static uint16_t previous_tick;
+    static uint16_t history[4];
+    static unsigned cursor;
+    uint16_t now = REG_TM3D;
+    history[cursor & 3u] = (uint16_t)(now - previous_tick);
+    previous_tick = now;
+    ++cursor;
+    uint32_t window = (uint32_t)history[0] + history[1] + history[2] + history[3];
+    if (!window) return;
+    /* 4 frames / window ticks, in tenths: 4 * 16384 * 10 / window. */
+    unsigned tenths = 655360u / window;
+    if (tenths > 999) tenths = 999;
+    unsigned digits[3] = {tenths / 100u, (tenths / 10u) % 10u, tenths % 10u};
+    unsigned x = 2;
+    for (unsigned index = 0; index < 3; ++index) {
+        if (index == 0 && digits[0] == 0) continue;   /* no leading zero */
+        uint16_t glyph = glyphs[digits[index]];
+        for (unsigned row = 0; row < 5; ++row)
+            for (unsigned column = 0; column < 3; ++column)
+                if ((glyph >> (row * 3 + column)) & 1u)
+                    logical_framebuffer[(2 + row) * SCREEN_WIDTH + x + column] = 15;
+        x += 4;
+        if (index == 1) {                              /* decimal point */
+            logical_framebuffer[6 * SCREEN_WIDTH + x] = 15;
+            x += 2;
+        }
+    }
+}
+#endif
+
 static void update_player(Player *player, uint16_t keys, uint16_t pressed,
                           uint32_t frame_cycles)
 {
@@ -180,6 +228,9 @@ int main(void)
 #endif
         uint32_t after_clipping = profile_timer_read();
         uint32_t after_lines = after_clipping;
+#if defined(BSP_TEXTURED) && !defined(BSP_NO_FPS_COUNTER)
+        draw_fps_counter();
+#endif
         unsigned draw_page = visible_page ^ 1;
         volatile uint16_t *page = (volatile uint16_t *)(draw_page ? MODE4_PAGE_1 : MODE4_PAGE_0);
         expand_logical_framebuffer(logical_framebuffer, page);

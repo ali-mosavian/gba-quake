@@ -474,6 +474,10 @@ def build_output(face_buffer, u_buffer, v_buffer, depth_buffer, faces, planes,
         for w in range(4):
             words.append(int.from_bytes(command[4*w:4*w+4], "little"))
     emit("uint32_t beam_commands[]", words, 6)
+    emit("int32_t beam_placements[][6]",
+         ["{%d, %d, %d, %d, %d, %d}" % (ax, ay, w, h, ru, rv)
+          for ax, ay, w, h, ru, rv in
+          (placement[t] for t in sorted(placement))], 2)
     lines_out.append("#endif")
     pathlib.Path(out_header).write_text("\n".join(lines_out) + "\n")
     print(f"wrote {out_header}")
