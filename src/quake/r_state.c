@@ -223,6 +223,15 @@ EWRAM static uint8_t shade_table[sizeof(bsp_shade_table)];
 #endif
 #endif
 EWRAM static uint16_t face_stamp[BSP_FACE_COUNT];
+#ifdef BSP_TEXTURED
+/* Where each leaf's contents land in the front-to-back candidate order,
+ * recorded during the ordered traversal. A brush entity inherits its leaf's
+ * position, which is what lets it interleave correctly with the world in a
+ * coverage-first painter: drawn after everything nearer, before everything
+ * farther -- and a mover behind a wall simply draws late and loses to
+ * coverage. */
+EWRAM static uint16_t leaf_candidate_start[BSP_LEAF_COUNT];
+#endif
 EWRAM static uint16_t edge_stamp[BSP_EDGE_COUNT];
 EWRAM static uint16_t vertex_stamp[BSP_VERTEX_COUNT];
 EWRAM static uint8_t vertex_outcode[BSP_VERTEX_COUNT];

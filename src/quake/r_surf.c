@@ -346,11 +346,37 @@ static HOT void render_textured_faces(void)
         for (unsigned word = 0; word < 4; ++word)
             texture_coverage[y][word] = 0;
 #ifndef BSP_NO_ENTITY_DRAW
-    for (unsigned entity = 0; entity < BSP_ENTITY_COUNT; ++entity)
-        if (entity_is_solid(&bsp_entities[entity]))
-            render_entity(entity);
+    /* Each mover takes its leaf's place in the front-to-back order and is
+     * drawn there, between the world faces nearer and farther than it. */
+    unsigned entity_order[BSP_ENTITY_COUNT];
+    uint16_t entity_position[BSP_ENTITY_COUNT];
+    unsigned entity_total = 0;
+    for (unsigned entity = 0; entity < BSP_ENTITY_COUNT; ++entity) {
+        const MapEntity *record = &bsp_entities[entity];
+        if (!entity_is_solid(record)) continue;
+        int32_t cx = ((record->mins[0] + record->maxs[0]) << 7) +
+                     entity_offset_q8(entity, 0);
+        int32_t cy = ((record->mins[1] + record->maxs[1]) << 7) +
+                     entity_offset_q8(entity, 1);
+        int32_t cz = ((record->mins[2] + record->maxs[2]) << 7) +
+                     entity_offset_q8(entity, 2);
+        uint16_t position =
+            leaf_candidate_start[find_camera_leaf(cx, cy, cz)];
+        unsigned slot = entity_total++;
+        while (slot && entity_position[slot - 1] > position) {
+            entity_position[slot] = entity_position[slot - 1];
+            entity_order[slot] = entity_order[slot - 1];
+            --slot;
+        }
+        entity_position[slot] = position;
+        entity_order[slot] = entity;
+    }
+    unsigned entity_next = 0;
 #endif
     for (unsigned accepted = 0; accepted < accepted_face_count; ++accepted) {
+        while (entity_next < entity_total &&
+               entity_position[entity_next] <= frame_faces[accepted])
+            render_entity(entity_order[entity_next++]);
         const RuntimeFace *face = &runtime_faces[frame_faces[accepted]];
         if (face->edge_count < 3) continue;
         uint16_t texture = face_texture(face);
@@ -412,4 +438,6 @@ static HOT void render_textured_faces(void)
         draw_textured_polygon_arm(projected, count, texture);
 #endif
     }
+    while (entity_next < entity_total)
+        render_entity(entity_order[entity_next++]);
 }

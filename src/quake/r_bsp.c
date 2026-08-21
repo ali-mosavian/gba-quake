@@ -28,7 +28,10 @@ static void append_leaf_faces(unsigned leaf_index)
 #ifdef BSP_TEXTURED
 static void append_candidate_faces_ordered(int node_index)
 {
-    if (node_index < 0) return;
+    if (node_index < 0) {
+        leaf_candidate_start[-node_index - 1] = candidate_face_count;
+        return;
+    }
     const MapNode *node = &bsp_nodes[node_index];
     unsigned near_side = node_near_side[node_index];
     append_candidate_faces_ordered(node->children[near_side]);

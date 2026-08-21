@@ -34,7 +34,7 @@ view (the drawbridge); ~1,741K where no mover is visible. 30 FPS is 559,333.
 | Six movers + teleporter, extracted with Quake's own movement derivation | works; states, triggers, wait times from entity keys |
 | Faces, lightmaps, texcoords all baked -- translation just works | zero new bake machinery |
 | Collision: player traces through each mover's own hull, translated | bbox pre-reject first; without it every trace walked six hulls |
-| Draw before the world, coverage-first | rooms behind doors are in the PVS, so drawing after would vanish them |
+| Draw interleaved at the mover's leaf position in the front-to-back order | the ordered traversal records every leaf's candidate position; a mover inherits its leaf's slot, so it draws after everything nearer and before everything farther. A mover behind a wall draws late and loses to coverage -- no special case. (v1 drew all movers first and they showed through their occluders.) |
 | Entity pass stack | 2.7KB of ring buffers on the IWRAM stack overflowed into .bss and corrupted culling statics -- presenting as a 456K "speedup". EWRAM statics now |
 | `angle` variable shadowed the spawn yaw in the extractor | BSP_SPAWN_YAW came out 0; every measurement against that header was of a different scene |
 | Cost | **+151K when movers are visible, ~0 otherwise.** The clip/project helpers run as out-of-line ROM-ARM copies for the entity path; inlining them into IWRAM would spend stack headroom already at 4.7K |
