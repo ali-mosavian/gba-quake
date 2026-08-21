@@ -625,6 +625,44 @@ routine -- project, fit, walk, scan, fill -- not a stage of it. The single
 place hand assembly did pay was replacing `__clzsi2`, a libgcc call the
 compiler could not avoid.
 
+### Analytic surface gradients: right idea, wrong machine
+
+Quake derives `d_sdivzstepu` and friends analytically from the surface plane
+and texture axes rather than fitting a plane through three projected vertices.
+The derivation was verified exact here: with this renderer's camera transform,
+a world plane becomes `nh*h + nv*v + nz*z = D` in camera space, and dividing
+through by z gives
+
+```text
+1/z = (nh*sx + nv*sy + 56*nz) / (56*D)          sx = x-60, sy = 40-y
+u/z = (ah*sx + av*sy)/56 + az + a0*(1/z)        a0 = dot(a,camera) + a[3] - u_base
+```
+
+Checked against a three-vertex fit in floating point, every coefficient agrees
+to eight decimals.
+
+Implemented, it **cost 23K cycles more than it saved**. The fit it replaced
+disappeared, but computing the coefficients in fixed point needs a division by
+the camera-to-plane distance and several by the focal length, and each of
+those is a normalised reciprocal on a CPU with no divider. Cut to a single
+reciprocal per face with the focal length folded into a constant multiply, it
+still lost: the setup inlines to about 320 instructions a face, half of them
+the `smull`/`lsr`/`orr` triples that every 64-bit shift becomes. It also draws
+21 faces a frame the fit used to reject as degenerate, worth another 11K.
+
+This is worth stating plainly because it explains something about the
+comparison to the GBA Quake port: **the analytic form is cheap on a machine
+with an FPU and expensive on one without a divider.** Quake computes those
+gradients with a handful of float divides per surface, near-free and pipelined
+on a Pentium. Here each becomes a table lookup, a normalisation and a 64-bit
+multiply. The architecture that makes Quake fast does not transfer to this CPU
+unchanged.
+
+What it *would* buy, if the setup could be made cheap, is exactness: no
+three-vertex fit means no conditioning problem, and the widest-spread triple
+search, its clamped ranking and the degenerate guards all exist only to prop
+that fit up.
+
 ### Where the remaining time is
 
 Ranked by size, with what each would need:
