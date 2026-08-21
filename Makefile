@@ -2,7 +2,7 @@ PROJECT := gba-affine-raster-lab
 BUILD := build
 ASM_OBJECTS := $(BUILD)/r_math_arm.o $(BUILD)/d_frame_arm.o \
 	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o $(BUILD)/r_exact_arm.o
-TESTS := floor_mode7 bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged quad_affine_exact quad_affine_exact_static
+TESTS := bsp_textured_sc floor_mode7_sc quad_affine_exact_static_sc quad_affine_exact_sc floor_mode7 bsp_textured_shape bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged quad_affine_exact quad_affine_exact_static
 DKP_IMAGE ?= devkitpro/devkitarm:latest
 
 DEVKITARM ?= /opt/devkitpro/devkitARM
@@ -91,6 +91,18 @@ src/generated/bsp_wireframe_map.h: scripts/extract_bsp_wireframe.py scripts/bsp_
 
 $(BUILD)/bsp_wireframe.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/d_segment_finish.inc src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -c $< -o $@
+
+$(BUILD)/bsp_textured_sc.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/d_segment_finish.inc src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DGBA_SLOW_ROM=1 -c $< -o $@
+
+$(BUILD)/floor_mode7_sc.o: src/floor_mode7.c src/gba_hardware.h src/generated/floor_plan.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -DGBA_SLOW_ROM=1 -c src/floor_mode7.c -o $@
+
+$(BUILD)/quad_affine_exact_static_sc.o: src/quad_affine.c src/generated/quad_affine_frames.h | $(BUILD)
+	$(CC) $(CFLAGS) -DQUAD_EXACT=1 -DQUAD_STATIC=1 -DGBA_SLOW_ROM=1 -c src/quad_affine.c -o $@
+
+$(BUILD)/quad_affine_exact_sc.o: src/quad_affine.c src/generated/quad_affine_frames.h | $(BUILD)
+	$(CC) $(CFLAGS) -DQUAD_EXACT=1 -DGBA_SLOW_ROM=1 -c src/quad_affine.c -o $@
 
 $(BUILD)/bsp_textured.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/d_segment_finish.inc src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -c $< -o $@

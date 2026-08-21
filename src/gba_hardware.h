@@ -12,7 +12,16 @@
  * 0x4317 selects 3 wait states on a first ROM access, 1 on a sequential one,
  * and enables the prefetcher. Every commercial cartridge sets this. */
 #define REG_WAITCNT GBA_REG16(0x04000204)
+/* GBA_SLOW_ROM keeps the BIOS default 4/2 with no prefetch. Flash carts that
+ * run the ROM from SDRAM -- the SuperCard family -- cannot serve 3/1 timing:
+ * the first misread instruction fetch after the write crashes the machine,
+ * which presents as a white screen at boot. SuperFW's docs say the same and
+ * patch WAITCNT writes out of known games; homebrew has to not make them. */
+#ifdef GBA_SLOW_ROM
+#define WAITCNT_FAST_ROM 0x0000
+#else
 #define WAITCNT_FAST_ROM 0x4317
+#endif
 /* Undocumented internal memory control. The reset value 0x0d000020 gives
  * EWRAM two wait states; 0x0e000020 gives it one, so every EWRAM access gets
  * about a third faster. Widely used by GBA homebrew and known to work on
