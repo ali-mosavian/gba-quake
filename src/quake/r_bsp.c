@@ -81,8 +81,14 @@ cache_faces:
         unsigned face_index = candidate_faces[i];
         const MapFace *face = &bsp_faces[face_index];
         const MapPlane *plane = &bsp_planes[face->plane];
+        /* Fold the face's side flag into the stored normal, once per leaf
+         * change rather than once per candidate per frame. A back-facing test
+         * then reduces to a sign check with no branch on side and no extra
+         * load. */
+        int flip = face->side ? -1 : 1;
         runtime_faces[i] = (RuntimeFace){
-            plane->nx, plane->ny, plane->nz, plane->distance,
+            (int16_t)(flip * plane->nx), (int16_t)(flip * plane->ny),
+            (int16_t)(flip * plane->nz), (int16_t)(flip * plane->distance),
             face->center_x, face->center_y, face->center_z, face->radius,
             face->first_edge, (uint16_t)face_index, face->edge_count, face->side
         };
@@ -170,8 +176,9 @@ static HOT void build_frame_lists(int32_t camera_x, int32_t camera_y,
     frame_edge_count = frame_vertex_count = accepted_face_count = 0;
     for (unsigned i = 0; i < candidate_face_count; ++i) {
         const RuntimeFace *face = &runtime_faces[i];
-        int32_t side = runtime_plane_side(face, camera_ix, camera_iy, camera_iz);
-        if ((!face->side && side >= 0) || (face->side && side <= 0)) continue;
+        /* The normal already carries the face's side, so the camera being on
+         * or behind the plane is a single sign test. */
+        if (runtime_plane_side(face, camera_ix, camera_iy, camera_iz) >= 0) continue;
         if (!face_is_in_view(face, camera_ix, camera_iy, camera_iz, sine, cosine)) continue;
 #ifdef BSP_TEXTURED
         frame_faces[accepted_face_count] = (uint16_t)i;
