@@ -52,6 +52,31 @@ static ClipTextureVertex clip_texture_vertex(unsigned vertex,
     return result;
 }
 
+/* Camera lookup, texture coordinates and projection for one ring vertex,
+ * written straight into the output ring.
+ *
+ * Kept as one function on purpose: composing the two halves meant the 20-byte
+ * intermediate went out to the stack and came straight back, and the ring had
+ * to be walked twice because the near-plane test needed the depth first. */
+static void project_ring_vertex(unsigned vertex, const FaceTexture *texture,
+                                TextureVertex *out)
+{
+    CameraPoint camera = camera_cache[vertex];
+    int32_t u_q8, v_q8;
+    world_texture_coordinates(runtime_vertices[vertex], texture, &u_q8, &v_q8);
+    int depth_index = maximum(1, minimum(4095, Q8_TO_INT(camera.depth + 128)));
+    int32_t inverse_depth = projection_reciprocal_q16[depth_index];
+    int32_t across = (int32_t)(((int64_t)camera.horizontal * inverse_depth) >> 12);
+    int32_t down = (int32_t)(((int64_t)camera.vertical * inverse_depth) >> 12);
+    out->xq8 = Q8_FROM_INT(60) + ((across * FOCAL_LENGTH) >> 4);
+    out->yq8 = Q8_FROM_INT(40) - ((down * FOCAL_LENGTH) >> 4);
+    out->x = Q8_TO_INT(out->xq8);
+    out->y = Q8_TO_INT(out->yq8);
+    out->inverse_depth = inverse_depth;
+    out->u_over_depth = Q8_MUL(u_q8, inverse_depth);
+    out->v_over_depth = Q8_MUL(v_q8, inverse_depth);
+}
+
 static ClipTextureVertex interpolate_clip_vertex(const ClipTextureVertex *a,
                                                   const ClipTextureVertex *b,
                                                   int32_t fraction)
@@ -129,6 +154,7 @@ static HOT void render_textured_faces(void)
          * on the clipped path. */
         uint16_t ring[32];
         int32_t behind = 0;
+        TextureVertex projected[33];
         for (unsigned i = 0; i < count; ++i) {
             int directed = bsp_surfedges[face->first_edge + i];
             MapEdge edge = runtime_edges[absolute(directed)];
@@ -137,8 +163,11 @@ static HOT void render_textured_faces(void)
             /* OR accumulates the sign bit, so this is negative if ANY
              * vertex is nearer than the near plane. */
             behind |= camera_cache[vertex].depth - NEAR_PLANE_Q8;
+            /* Projected unconditionally. Four faces in 122 turn out to need
+             * clipping and redo this below; paying for those is cheaper than
+             * walking the ring a second time for the other 118. */
+            project_ring_vertex(vertex, &face_texture_info, &projected[i]);
         }
-        TextureVertex projected[33];
         if (behind < 0) {
             /* Near clipping needed. Materialise the clip ring, which is the
              * only reason the intermediate array exists. */
@@ -150,16 +179,11 @@ static HOT void render_textured_faces(void)
             if (count < 3) continue;
             for (unsigned i = 0; i < count; ++i)
                 projected[i] = project_texture_vertex(&clipped[i]);
-        } else {
-            /* Wholly in front of the near plane, which is nearly every face:
-             * project straight into the output ring and never build the
-             * intermediate one. */
-            for (unsigned i = 0; i < count; ++i) {
-                ClipTextureVertex camera =
-                    clip_texture_vertex(ring[i], &face_texture_info);
-                projected[i] = project_texture_vertex(&camera);
-            }
         }
+#ifdef BSP_TEXTURED_NO_POLYGON
+        degenerate_face_count += (uint16_t)(projected[0].x + projected[0].u_over_depth);
+        continue;
+#endif
         uint16_t texture = face_texture_info.texture;
 #if defined(BSP_TEXTURED_SOLID) || defined(BSP_TEXTURED_NO_COVERAGE) || \
     defined(BSP_TEXTURED_C_REFERENCE)

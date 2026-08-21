@@ -2,7 +2,7 @@ PROJECT := gba-affine-raster-lab
 BUILD := build
 ASM_OBJECTS := $(BUILD)/r_math_arm.o $(BUILD)/d_frame_arm.o \
 	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o
-TESTS := bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
+TESTS := bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
 DKP_IMAGE ?= devkitpro/devkitarm:latest
 
 DEVKITARM ?= /opt/devkitpro/devkitARM
@@ -72,6 +72,12 @@ $(BUILD)/bsp_textured_nospans.o: src/quake/r_unity.c src/quake/r_state.c src/qua
 
 $(BUILD)/bsp_textured_norows.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_TEXTURED_NO_ROWS=1 -c $< -o $@
+
+$(BUILD)/bsp_textured_nopoly.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_TEXTURED_NO_POLYGON=1 -c $< -o $@
+
+$(BUILD)/bsp_textured_nograd.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_TEXTURED_NO_GRADIENTS=1 -c $< -o $@
 
 $(BUILD)/bsp_textured_nowalkers.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_TEXTURED_NO_WALKERS=1 -c $< -o $@

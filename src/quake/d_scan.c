@@ -35,6 +35,15 @@ typedef struct {
     int32_t x_q8, step_q8;
 } TextureEdgeWalker;
 
+/* Clamp a pixel delta into 15 bits so a cross product of two of them stays
+ * inside 32 bits with room for the subtraction. */
+static int32_t clamp_rank(int32_t value)
+{
+    if (value > 16383) return 16383;
+    if (value < -16383) return -16383;
+    return value;
+}
+
 static int minimum(int a, int b) { return a < b ? a : b; }
 static int maximum(int a, int b) { return a > b ? a : b; }
 
@@ -257,16 +266,33 @@ void draw_textured_polygon_reference(
      * vertices, and fitting to those amplifies every rounding error in the
      * gradients. */
     const TextureVertex *a = &vertices[0], *b = 0, *c = 0;
-    int64_t determinant = 0;
+    int32_t best_spread = 0;
     for (unsigned i = 1; i + 1 < vertex_count; ++i) {
         const TextureVertex *candidate_b = &vertices[i];
         const TextureVertex *candidate_c = &vertices[i + 1];
-        int64_t area = (int64_t)(candidate_b->xq8 - a->xq8) * (candidate_c->yq8 - a->yq8) -
-                       (int64_t)(candidate_c->xq8 - a->xq8) * (candidate_b->yq8 - a->yq8);
-        int64_t magnitude = area < 0 ? -area : area;
-        int64_t best = determinant < 0 ? -determinant : determinant;
-        if (magnitude > best) { determinant = area; b = candidate_b; c = candidate_c; }
+        /* Ranking only, so whole pixels clamped to 15 bits are plenty and the
+         * cross product stays in 32. Doing this at Q8 in 64-bit purely to
+         * compare magnitudes cost 591 cycles a face. */
+        int32_t bx = clamp_rank(candidate_b->x - a->x);
+        int32_t by = clamp_rank(candidate_b->y - a->y);
+        int32_t cx = clamp_rank(candidate_c->x - a->x);
+        int32_t cy = clamp_rank(candidate_c->y - a->y);
+        int32_t spread = bx * cy - cx * by;
+        if (spread < 0) spread = -spread;
+        if (spread > best_spread) {
+            best_spread = spread;
+            b = candidate_b;
+            c = candidate_c;
+        }
     }
+    if (!b) return;
+    /* The winner's determinant, once, at full Q8 precision for the fit. */
+    int64_t determinant = (int64_t)(b->xq8 - a->xq8) * (c->yq8 - a->yq8) -
+                          (int64_t)(c->xq8 - a->xq8) * (b->yq8 - a->yq8);
+#ifdef BSP_TEXTURED_NO_GRADIENTS
+    degenerate_face_count += (uint16_t)determinant;   /* defeat DCE */
+    return;
+#endif
     PlaneSolver solver = plane_solver(determinant);
     if (!solver.ok) return;
     int64_t bx = b->xq8 - a->xq8, cx = c->xq8 - a->xq8;
