@@ -40,6 +40,11 @@ typedef struct {
     const uint32_t *reciprocal;
 } TextureRowArgs;
 
+/* Added to the map's spawn yaw, in Q8 turns: 16384 is a quarter turn. Used to
+ * benchmark the same scene from a different angle without the scripted walk. */
+#ifndef BSP_YAW_OFFSET_Q8
+#define BSP_YAW_OFFSET_Q8 0
+#endif
 enum {
     SCREEN_WIDTH = 120, SCREEN_HEIGHT = 80,
     MODE4_PAGE_0 = 0x06000000, MODE4_PAGE_1 = 0x0600a000,
@@ -201,6 +206,11 @@ static uint32_t span_flat_v_count, texel_flat_v_count;
  * "one coordinate is constant" and reduce to the same five instructions with
  * different (base, coordinate, step, mask). */
 static uint32_t span_flat_u_count, texel_flat_u_count;
+/* Texels binned by how many texel boundaries the run crosses on its cheaper
+ * axis: bucket 0 is a run the specialised body already takes, and the rest say
+ * whether splitting a run at its boundaries into constant-row pieces could
+ * ever pay. Weighted by texels, not runs. */
+static uint32_t texel_cross_bucket[6];
 static uint32_t texture_rom_fallbacks, near_clipped_faces;
 static uint16_t near_clip_count, screen_clip_count;
 static uint16_t cached_camera_leaf = INVALID_LEAF;
@@ -229,6 +239,7 @@ typedef struct {
     int32_t player_speed;
     uint32_t wedged_steps, blocked_steps;
     uint32_t spans_flat_v, texels_flat_v, spans_flat_u, texels_flat_u;
+    uint32_t cross0, cross1, cross2, cross3, cross4, cross5;
 } BspProfile;
 EWRAM volatile BspProfile bsp_profile;
 

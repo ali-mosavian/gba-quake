@@ -66,7 +66,13 @@ int main(void)
     player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
     player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
     player.velocity.x = player.velocity.y = player.velocity.z = 0;
-    player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW);
+    /* A fixed pose to benchmark from. The scripted walk cannot be used to
+     * compare two builds: they run at different speeds, so at any given
+     * wall-clock second their cameras are somewhere different and the frames
+     * are not comparable. Turning on the spot is deterministic, and one
+     * quarter turn changes a corridor view into an oblique one -- which is
+     * exactly the axis along which per-view optimisations differ. */
+    player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW) + BSP_YAW_OFFSET_Q8;
     player.on_ground = 0;
     int32_t camera_x = player.position.x;
     int32_t camera_y = player.position.y;
@@ -126,7 +132,7 @@ int main(void)
             player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
             player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
             player.velocity.x = player.velocity.y = player.velocity.z = 0;
-            player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW);
+            player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW) + BSP_YAW_OFFSET_Q8;
             cached_camera_leaf = INVALID_LEAF;
         } else {
             update_player(&player, keys, pressed, bsp_profile.total_cycles);
@@ -151,6 +157,7 @@ int main(void)
         span_clear_count = span_hidden_count = span_mixed_count = 0;
         span_flat_v_count = texel_flat_v_count = 0;
         span_flat_u_count = texel_flat_u_count = 0;
+        for (unsigned i = 0; i < 6; ++i) texel_cross_bucket[i] = 0;
         texture_rom_fallbacks = near_clipped_faces = 0;
         profile_timer_start();
         clear_logical_framebuffer(logical_framebuffer);
@@ -206,7 +213,9 @@ int main(void)
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 #endif
             span_flat_v_count, texel_flat_v_count,
-            span_flat_u_count, texel_flat_u_count
+            span_flat_u_count, texel_flat_u_count,
+            texel_cross_bucket[0], texel_cross_bucket[1], texel_cross_bucket[2],
+            texel_cross_bucket[3], texel_cross_bucket[4], texel_cross_bucket[5]
         };
 
 #ifdef CAMERA_INPUT

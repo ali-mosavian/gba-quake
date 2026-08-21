@@ -1,4 +1,13 @@
 /* Texture-plane math, scan conversion, and the bit-exact C reference drawer. */
+/* Whether the specialised single-axis run below is compiled in. The
+ * diagnostic drawers that fetch no texel have nothing to specialise. */
+#ifndef BSP_SPAN_FLAT
+#if defined(BSP_TEXTURED_SOLID) || defined(BSP_TEXTURED_NO_FETCH)
+#define BSP_SPAN_FLAT 0
+#else
+#define BSP_SPAN_FLAT 1
+#endif
+#endif
 /* Work counters are opt-in: tallying them costs about 157K cycles a frame,
  * which is a quarter of the entire 30 FPS budget. COUNT is defined in
  * r_state.c so the movement code can use it too. */
@@ -627,6 +636,28 @@ void draw_textured_polygon_reference(
                 u &= (int)u_wrap;
                 v = (v & (int)v_wrap) << width_shift;
                 dv <<= width_shift;
+#if BSP_SPAN_FLAT
+                /* Does this run hold one coordinate still?
+                 *
+                 * A surface seen face on steps only along the texture row, and
+                 * one seen edge on only down the column; either way half the
+                 * address is a constant for the whole run and folds into a
+                 * base pointer, taking the pixel loop from eight instructions
+                 * to five. Measured with the row assumed constant everywhere,
+                 * that is worth 113,022 cycles a frame -- 11.8 a texel, a
+                 * sixth of the frame.
+                 *
+                 * How much of it is reachable swings hard with where the
+                 * camera looks: 78.5% of texels at the spawn, 95.3% facing a
+                 * wall down a corridor, 1.6% looking diagonally across a room.
+                 * The test is two compares, so the views it cannot help pay
+                 * almost nothing for the ones it can.
+                 *
+                 * Exactly zero, not "crosses no texel boundary across the
+                 * run": the weaker test was measured and returned 143 texels
+                 * against 120 at the oblique pose, which does not pay for the
+                 * two multiplies it needs. */
+#endif
 #ifdef BSP_PROFILE_SPAN_SHAPE
                 /* How much of the frame a specialised inner loop could take.
                  *
@@ -647,6 +678,15 @@ void draw_textured_polygon_reference(
                 } else if ((u >> 8) == ((u + du * segment_pixels) >> 8)) {
                     ++span_flat_u_count;
                     texel_flat_u_count += (uint32_t)segment_pixels + 1;
+                }
+                {
+                    int rows = ((v + dv * segment_pixels) >> 8) - (v >> 8);
+                    int columns = ((u + du * segment_pixels) >> 8) - (u >> 8);
+                    if (rows < 0) rows = -rows;
+                    if (columns < 0) columns = -columns;
+                    int cheaper = rows < columns ? rows : columns;
+                    if (cheaper > 5) cheaper = 5;
+                    texel_cross_bucket[cheaper] += (uint32_t)segment_pixels + 1;
                 }
 #endif
 #endif
@@ -687,79 +727,127 @@ void draw_textured_polygon_reference(
      * write to the aligned address -- and splitting the run into lead, aligned
      * body and tail costs three dispatches instead of one, measured at +30K. Ten
      * times what the wider stores return. */
+#if BSP_SPAN_FLAT
+/* The specialised runs: one coordinate held still, so its half of the address
+ * is a base pointer computed once and the loop is five instructions instead of
+ * eight -- one mask, two loads, a store and a step.
+ *
+ * There are two of these rather than one parameterised body walking a
+ * (base, coordinate, step, mask) tuple. That version was written and measured
+ * and it was worse than useless: the tuple is live across the branch alongside
+ * u, v, du, dv and both masks, and the extra pressure pushed the GENERAL
+ * path's masks and texture base onto the stack, where the unrolled body
+ * reloaded them once per pixel. It cost 4% at the angles the specialisation
+ * cannot help. Written this way each branch introduces exactly one new live
+ * value, the base pointer, and kills two, the coordinate it no longer steps. */
+#ifdef BSP_TEXTURED_NO_LIGHT
+#define TEXEL_FLAT_ROW() ((uint32_t)flat_base[((unsigned)(u >> 8)) & u_mask])
+#define TEXEL_FLAT_COL() ((uint32_t)flat_base[((unsigned)(v >> 8)) & row_mask])
+#else
+#define TEXEL_FLAT_ROW() \
+    ((uint32_t)shade_row[flat_base[((unsigned)(u >> 8)) & u_mask]])
+#define TEXEL_FLAT_COL() \
+    ((uint32_t)shade_row[flat_base[((unsigned)(v >> 8)) & row_mask]])
+#endif
+#define SHIFT_FLAT_ROW() do { u += du; } while (0)
+#define SHIFT_FLAT_COL() do { v += dv; } while (0)
+#define WRITE_FLAT_ROW() \
+    do { *destination++ = (uint8_t)TEXEL_FLAT_ROW(); SHIFT_FLAT_ROW(); } while (0)
+#define WRITE_FLAT_COL() \
+    do { *destination++ = (uint8_t)TEXEL_FLAT_COL(); SHIFT_FLAT_COL(); } while (0)
+#endif
 #define SHIFT_ONE() do { u += du; v += dv; } while (0)
 #define WRITE_ONE() do { *destination++ = (uint8_t)TEXEL(); SHIFT_ONE(); } while (0)
+#ifndef BSP_TEXTURED_NO_COVERAGE
+#define RECORD_CLEAR_RUN() (*coverage_word = covered | span_mask)
+/* Partly covered: test the coverage bit per pixel and step regardless. */
+#define MIXED_RUN(FETCH, SHIFT)                                                \
+                else {                                                         \
+                    COUNT(span_mixed_count, 1);                                \
+                    for (int x = span; x <= end; ++x) {                        \
+                        uint32_t bit = 1u << (x & 31);                         \
+                        if (!(covered & bit)) {                                \
+                            covered |= bit;                                    \
+                            COUNT(texel_sample_count, 1);                      \
+                            row[x] = (uint8_t)FETCH();                         \
+                        }                                                      \
+                        SHIFT();                                               \
+                    }                                                          \
+                    *coverage_word = covered;                                  \
+                }
+#else
+#define RECORD_CLEAR_RUN() ((void)0)
+#define MIXED_RUN(FETCH, SHIFT)
+#endif
+/* Nothing in front of this run, so no per-pixel coverage test is needed: one
+ * mask OR at the end records the whole run.
+ *
+ * The run itself dispatches once into fully unrolled code rather than looping.
+ * Segments here average about six pixels, so a counted loop spends much of its
+ * time on the counter and the branch instead of on texels. Falling through a
+ * single body keeps one copy of the logic for every length. */
+#define DRAW_RUN(WRITE, FETCH, SHIFT)                                          \
+                if (!blocked) {                                                \
+                    COUNT(span_clear_count, 1);                                \
+                    COUNT(texel_sample_count, (uint32_t)segment_pixels + 1);   \
+                    uint8_t *destination = row + span;                         \
+                    switch ((unsigned)segment_pixels + 1) {                    \
+                    case 32: WRITE(); __attribute__((fallthrough));                             \
+                    case 31: WRITE(); __attribute__((fallthrough));                             \
+                    case 30: WRITE(); __attribute__((fallthrough));                             \
+                    case 29: WRITE(); __attribute__((fallthrough));                             \
+                    case 28: WRITE(); __attribute__((fallthrough));                             \
+                    case 27: WRITE(); __attribute__((fallthrough));                             \
+                    case 26: WRITE(); __attribute__((fallthrough));                             \
+                    case 25: WRITE(); __attribute__((fallthrough));                             \
+                    case 24: WRITE(); __attribute__((fallthrough));                             \
+                    case 23: WRITE(); __attribute__((fallthrough));                             \
+                    case 22: WRITE(); __attribute__((fallthrough));                             \
+                    case 21: WRITE(); __attribute__((fallthrough));                             \
+                    case 20: WRITE(); __attribute__((fallthrough));                             \
+                    case 19: WRITE(); __attribute__((fallthrough));                             \
+                    case 18: WRITE(); __attribute__((fallthrough));                             \
+                    case 17: WRITE(); __attribute__((fallthrough));                             \
+                    case 16: WRITE(); __attribute__((fallthrough));                             \
+                    case 15: WRITE(); __attribute__((fallthrough));                             \
+                    case 14: WRITE(); __attribute__((fallthrough));                             \
+                    case 13: WRITE(); __attribute__((fallthrough));                             \
+                    case 12: WRITE(); __attribute__((fallthrough));                             \
+                    case 11: WRITE(); __attribute__((fallthrough));                             \
+                    case 10: WRITE(); __attribute__((fallthrough));                             \
+                    case  9: WRITE(); __attribute__((fallthrough));                             \
+                    case  8: WRITE(); __attribute__((fallthrough));                             \
+                    case  7: WRITE(); __attribute__((fallthrough));                             \
+                    case  6: WRITE(); __attribute__((fallthrough));                             \
+                    case  5: WRITE(); __attribute__((fallthrough));                             \
+                    case  4: WRITE(); __attribute__((fallthrough));                             \
+                    case  3: WRITE(); __attribute__((fallthrough));                             \
+                    case  2: WRITE(); __attribute__((fallthrough));                             \
+                    case  1: WRITE(); break;                             \
+                    default: break;                                            \
+                    }                                                          \
+                    RECORD_CLEAR_RUN();                                        \
+                }                                                              \
+                MIXED_RUN(FETCH, SHIFT)
                 /* Byte stores, deliberately. Packing four texels into one word
                  * store was measured both here and with the framebuffer still in
                  * EWRAM, and lost either way: spans average about five pixels, so
                  * an aligned free quad rarely exists, and the packing shifts cost
                  * more than the stores they replace. */
-                if (!blocked) {
-                    /* Nothing in front of this run, so no per-pixel coverage test
-                     * is needed: one mask OR at the end records the whole run.
-                     *
-                     * The run itself dispatches once into fully unrolled code
-                     * rather than looping. Segments here average about five
-                     * pixels, so a counted loop spends much of its time on the
-                     * counter and the branch instead of on texels. Falling through
-                     * a single body keeps one copy of the logic for every length. */
-                    COUNT(span_clear_count, 1);
-                    COUNT(texel_sample_count, (uint32_t)segment_pixels + 1);
-                    uint8_t *destination = row + span;
-                    switch ((unsigned)segment_pixels + 1) {
-                    case 32: WRITE_ONE(); __attribute__((fallthrough));
-                    case 31: WRITE_ONE(); __attribute__((fallthrough));
-                    case 30: WRITE_ONE(); __attribute__((fallthrough));
-                    case 29: WRITE_ONE(); __attribute__((fallthrough));
-                    case 28: WRITE_ONE(); __attribute__((fallthrough));
-                    case 27: WRITE_ONE(); __attribute__((fallthrough));
-                    case 26: WRITE_ONE(); __attribute__((fallthrough));
-                    case 25: WRITE_ONE(); __attribute__((fallthrough));
-                    case 24: WRITE_ONE(); __attribute__((fallthrough));
-                    case 23: WRITE_ONE(); __attribute__((fallthrough));
-                    case 22: WRITE_ONE(); __attribute__((fallthrough));
-                    case 21: WRITE_ONE(); __attribute__((fallthrough));
-                    case 20: WRITE_ONE(); __attribute__((fallthrough));
-                    case 19: WRITE_ONE(); __attribute__((fallthrough));
-                    case 18: WRITE_ONE(); __attribute__((fallthrough));
-                    case 17: WRITE_ONE(); __attribute__((fallthrough));
-                    case 16: WRITE_ONE(); __attribute__((fallthrough));
-                    case 15: WRITE_ONE(); __attribute__((fallthrough));
-                    case 14: WRITE_ONE(); __attribute__((fallthrough));
-                    case 13: WRITE_ONE(); __attribute__((fallthrough));
-                    case 12: WRITE_ONE(); __attribute__((fallthrough));
-                    case 11: WRITE_ONE(); __attribute__((fallthrough));
-                    case 10: WRITE_ONE(); __attribute__((fallthrough));
-                    case  9: WRITE_ONE(); __attribute__((fallthrough));
-                    case  8: WRITE_ONE(); __attribute__((fallthrough));
-                    case  7: WRITE_ONE(); __attribute__((fallthrough));
-                    case  6: WRITE_ONE(); __attribute__((fallthrough));
-                    case  5: WRITE_ONE(); __attribute__((fallthrough));
-                    case  4: WRITE_ONE(); __attribute__((fallthrough));
-                    case  3: WRITE_ONE(); __attribute__((fallthrough));
-                    case  2: WRITE_ONE(); __attribute__((fallthrough));
-                    case  1: WRITE_ONE(); break;
-                    default: break;
-                    }
-#ifndef BSP_TEXTURED_NO_COVERAGE
-                    *coverage_word = covered | span_mask;
+#if BSP_SPAN_FLAT
+                if (!dv) {
+                    const uint8_t *const flat_base =
+                        texture_pixels + (((unsigned)(v >> 8)) & row_mask);
+                    DRAW_RUN(WRITE_FLAT_ROW, TEXEL_FLAT_ROW, SHIFT_FLAT_ROW)
+                } else if (!du) {
+                    const uint8_t *const flat_base =
+                        texture_pixels + (((unsigned)(u >> 8)) & u_mask);
+                    DRAW_RUN(WRITE_FLAT_COL, TEXEL_FLAT_COL, SHIFT_FLAT_COL)
+                } else
 #endif
+                {
+                    DRAW_RUN(WRITE_ONE, TEXEL, SHIFT_ONE)
                 }
-#ifndef BSP_TEXTURED_NO_COVERAGE
-                else {
-                    COUNT(span_mixed_count, 1);
-                    for (int x = span; x <= end; ++x) {
-                        uint32_t bit = 1u << (x & 31);
-                        if (!(covered & bit)) {
-                            covered |= bit;
-                            COUNT(texel_sample_count, 1);
-                            row[x] = (uint8_t)TEXEL();
-                        }
-                        SHIFT_ONE();
-                    }
-                    *coverage_word = covered;
-                }
-#endif
 #undef TEXEL
 #undef SHIFT_ONE
 #undef WRITE_ONE

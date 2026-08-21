@@ -38,6 +38,8 @@ FIELDS = [
     ("wedged_steps", "I"), ("blocked_steps", "I"),
     ("spans_flat_v", "I"), ("texels_flat_v", "I"),
     ("spans_flat_u", "I"), ("texels_flat_u", "I"),
+    ("cross0", "I"), ("cross1", "I"), ("cross2", "I"),
+    ("cross3", "I"), ("cross4", "I"), ("cross5", "I"),
 ]
 LAYOUT = "<" + "".join(code for _, code in FIELDS[:19]) + "2x" + "".join(code for _, code in FIELDS[19:])
 
