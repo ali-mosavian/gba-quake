@@ -514,6 +514,23 @@ void draw_textured_polygon_reference(
             int du = divide_short_span(u1 - u, (unsigned)segment_pixels);
             int dv = divide_short_span(v1 - v, (unsigned)segment_pixels);
 #if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH)
+            /* Nearest texel, with Hecker's direction-stable tie break.
+             *
+             * Truncating u and v biases every lookup half a texel toward -u
+             * and -v. Rounding fixes the bias but leaves exact halves landing
+             * on whichever side the rounding happens to favour, so a texel
+             * boundary alternates as a gradient changes sign. Adding 128 when
+             * the gradient is positive and 127 when it is negative is the
+             * fixed-point form of floor(x + 1/2) and ceil(x - 1/2), which
+             * breaks the tie consistently against the direction of travel.
+             *
+             * Applied once per segment: the bias is a constant and survives
+             * the per-pixel stepping, and du and dv cannot change sign inside
+             * a segment. */
+            /* (x >> 31) is -1 for a negative gradient and 0 otherwise, so
+             * this is 128 or 127 without a branch. */
+            u += 128 + (du >> 31);
+            v += 128 + (dv >> 31);
             /* Wrap once here so the pre-scaled v cannot leave 32 bits, then
              * fold the row shift into v and its step. Both are per segment,
              * not per pixel. */
