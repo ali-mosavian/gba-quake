@@ -30,7 +30,7 @@ FIELDS = [
     ("drawn_faces", "I"), ("drawn_rows", "I"), ("drawn_spans", "I"),
     ("pixel_iterations", "I"), ("texel_samples", "I"),
     ("spans_clear", "I"), ("spans_hidden", "I"), ("spans_mixed", "I"),
-    ("rom_fallbacks", "I"), ("cache_bytes", "I"),
+    ("rom_fallbacks", "I"), ("cache_bytes", "I"), ("near_clipped_faces", "I"),
 ]
 LAYOUT = "<" + "".join(code for _, code in FIELDS[:19]) + "2x" + "".join(code for _, code in FIELDS[19:])
 

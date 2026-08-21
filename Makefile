@@ -2,7 +2,7 @@ PROJECT := gba-affine-raster-lab
 BUILD := build
 ASM_OBJECTS := $(BUILD)/r_math_arm.o $(BUILD)/d_frame_arm.o \
 	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o
-TESTS := bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
+TESTS := bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
 DKP_IMAGE ?= devkitpro/devkitarm:latest
 
 DEVKITARM ?= /opt/devkitpro/devkitARM

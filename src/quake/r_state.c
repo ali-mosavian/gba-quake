@@ -122,7 +122,7 @@ static uint16_t degenerate_face_count;
 static uint32_t drawn_face_count, drawn_row_count, drawn_span_count;
 static uint32_t pixel_iteration_count, texel_sample_count;
 static uint32_t span_clear_count, span_hidden_count, span_mixed_count;
-static uint32_t texture_rom_fallbacks;
+static uint32_t texture_rom_fallbacks, near_clipped_faces;
 static uint16_t near_clip_count, screen_clip_count;
 static uint16_t cached_camera_leaf = INVALID_LEAF;
 static uint16_t frame_stamp = 1, candidate_stamp = 1;
@@ -139,7 +139,7 @@ typedef struct {
     uint32_t drawn_faces, drawn_rows, drawn_spans;
     uint32_t pixel_iterations, texel_samples;
     uint32_t spans_clear, spans_hidden, spans_mixed;
-    uint32_t rom_fallbacks, cache_bytes;
+    uint32_t rom_fallbacks, cache_bytes, near_clipped_faces;
 } BspProfile;
 EWRAM volatile BspProfile bsp_profile;
 

@@ -85,7 +85,7 @@ int main(void)
         drawn_face_count = drawn_row_count = drawn_span_count = 0;
         pixel_iteration_count = texel_sample_count = 0;
         span_clear_count = span_hidden_count = span_mixed_count = 0;
-        texture_rom_fallbacks = 0;
+        texture_rom_fallbacks = near_clipped_faces = 0;
         profile_timer_start();
         clear_logical_framebuffer(logical_framebuffer);
         uint32_t after_clear = profile_timer_read();
@@ -125,9 +125,9 @@ int main(void)
             pixel_iteration_count, texel_sample_count,
             span_clear_count, span_hidden_count, span_mixed_count,
 #if defined(BSP_TEXTURED) && !defined(BSP_TEXTURED_SOLID)
-            texture_rom_fallbacks, texture_cache_used
+            texture_rom_fallbacks, texture_cache_used, near_clipped_faces
 #else
-            0, 0
+            0, 0, 0
 #endif
         };
 

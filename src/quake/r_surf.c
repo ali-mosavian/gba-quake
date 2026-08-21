@@ -123,19 +123,43 @@ static HOT void render_textured_faces(void)
         const RuntimeFace *face = &runtime_faces[frame_faces[accepted]];
         if (face->edge_count < 3) continue;
         FaceTexture face_texture_info = face_texture(face);
-        ClipTextureVertex unclipped[32], clipped[33];
         unsigned count = minimum(face->edge_count, 32);
+        /* Resolve the vertex ring once. surfedge -> edge -> vertex is three
+         * dependent loads across ROM and EWRAM, and the ring is walked twice
+         * on the clipped path. */
+        uint16_t ring[32];
+        int32_t behind = 0;
         for (unsigned i = 0; i < count; ++i) {
             int directed = bsp_surfedges[face->first_edge + i];
             MapEdge edge = runtime_edges[absolute(directed)];
             unsigned vertex = directed >= 0 ? edge.first : edge.second;
-            unclipped[i] = clip_texture_vertex(vertex, &face_texture_info);
+            ring[i] = (uint16_t)vertex;
+            /* OR accumulates the sign bit, so this is negative if ANY
+             * vertex is nearer than the near plane. */
+            behind |= camera_cache[vertex].depth - NEAR_PLANE_Q8;
         }
-        count = clip_texture_polygon_near(unclipped, count, clipped);
-        if (count < 3) continue;
         TextureVertex projected[33];
-        for (unsigned i = 0; i < count; ++i)
-            projected[i] = project_texture_vertex(&clipped[i]);
+        if (behind < 0) {
+            /* Near clipping needed. Materialise the clip ring, which is the
+             * only reason the intermediate array exists. */
+            COUNT(near_clipped_faces, 1);
+            ClipTextureVertex unclipped[32], clipped[33];
+            for (unsigned i = 0; i < count; ++i)
+                unclipped[i] = clip_texture_vertex(ring[i], &face_texture_info);
+            count = clip_texture_polygon_near(unclipped, count, clipped);
+            if (count < 3) continue;
+            for (unsigned i = 0; i < count; ++i)
+                projected[i] = project_texture_vertex(&clipped[i]);
+        } else {
+            /* Wholly in front of the near plane, which is nearly every face:
+             * project straight into the output ring and never build the
+             * intermediate one. */
+            for (unsigned i = 0; i < count; ++i) {
+                ClipTextureVertex camera =
+                    clip_texture_vertex(ring[i], &face_texture_info);
+                projected[i] = project_texture_vertex(&camera);
+            }
+        }
         uint16_t texture = face_texture_info.texture;
 #if defined(BSP_TEXTURED_SOLID) || defined(BSP_TEXTURED_NO_COVERAGE) || \
     defined(BSP_TEXTURED_C_REFERENCE)
