@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Convert a Quake 1 BSP into compact, ROM-resident wireframe data."""
+import collections
 import math, pathlib, re, struct, sys
 
 ENTITIES, PLANES, TEXTURES, VERTICES, VISIBILITY = 0, 1, 2, 3, 4
@@ -34,7 +35,123 @@ def pak_entry(path, wanted):
             return data[start:start + size]
     raise ValueError(f"{wanted} not found in {path}")
 
-def extract(input_path, output_path, pak_path=None):
+
+def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks):
+    """Merge edge-adjacent coplanar faces that share a texinfo, keeping every
+    merged polygon convex.
+
+    The scanline fill takes min/max x per row, so it can only draw convex
+    polygons; a merge that produced a concavity would fill across it. This is
+    the same rule qbsp's own face merging uses. Quake windings run clockwise
+    seen from the front, so a convex turn is NEGATIVE against the face normal.
+
+    Faces sharing a plane also share a BSP node (a node lists the faces lying
+    on its plane), so merging never moves a face between nodes and the
+    near-to-far ordering survives. Order among the merged faces themselves is
+    irrelevant: they are coplanar and cannot occlude one another.
+    """
+    def sub(a, b): return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+    def cross(a, b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+    def dot(a, b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+    EPS = 1e-3
+
+    def try_merge(r1, r2, normal):
+        shared = None
+        for i in range(len(r1)):
+            a, b = r1[i], r1[(i + 1) % len(r1)]
+            for j in range(len(r2)):
+                c, d = r2[j], r2[(j + 1) % len(r2)]
+                if a == d and b == c:
+                    if shared is not None:
+                        return None          # more than one shared edge
+                    shared = (i, j)
+        if shared is None:
+            return None
+        i, j = shared
+        spliced = ([r1[(i + 1 + k) % len(r1)] for k in range(len(r1))][:-1] +
+                   [r2[(j + 1 + k) % len(r2)] for k in range(len(r2))][:-1])
+        out, n = [], len(spliced)
+        for k in range(n):
+            prev, cur, nxt = spliced[(k - 1) % n], spliced[k], spliced[(k + 1) % n]
+            e1 = sub(vertices[cur], vertices[prev])
+            e2 = sub(vertices[nxt], vertices[cur])
+            turn = -dot(cross(e1, e2), normal)
+            scale = math.sqrt(dot(e1, e1)) * math.sqrt(dot(e2, e2))
+            if scale < 1e-9:
+                continue
+            if turn / scale < -EPS:
+                return None                  # concave joint
+            if abs(turn) / scale <= EPS:
+                continue                     # collinear vertex, drop it
+            out.append(cur)
+        return out if len(out) >= 3 else None
+
+    groups = collections.defaultdict(list)
+    for i, (plane, side, first, count, tinfo, *_) in enumerate(faces):
+        groups[(plane, side, tinfo)].append(i)
+
+    survivor = list(range(len(faces)))
+    working = {i: list(rings[i]) for i in range(len(faces))}
+    absorbed = set()
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        pool = [m for m in members]
+        changed = True
+        while changed:
+            changed = False
+            for a in range(len(pool)):
+                if pool[a] is None:
+                    continue
+                for b in range(a + 1, len(pool)):
+                    if pool[b] is None:
+                        continue
+                    merged = try_merge(working[pool[a]], working[pool[b]],
+                                       normals[pool[a]])
+                    if merged:
+                        working[pool[a]] = merged
+                        survivor[pool[b]] = pool[a]
+                        absorbed.add(pool[b])
+                        pool[b] = None
+                        changed = True
+            pool = [p for p in pool if p is not None]
+
+    # resolve chains, then renumber the survivors keeping their original order
+    def root(i):
+        while survivor[i] != i:
+            i = survivor[i]
+        return i
+    keep = [i for i in range(len(faces)) if i not in absorbed]
+    remap = {old: new for new, old in enumerate(keep)}
+    face_map = [remap[root(i)] for i in range(len(faces))]
+
+    new_faces = [faces[i] for i in keep]
+    new_rings = [working[i] for i in keep]
+
+    # a node's faces are those on its plane, so its range stays contiguous
+    new_nodes = []
+    for node in nodes:
+        first, count = node[9], node[10]
+        kept = [f for f in range(first, first + count) if f not in absorbed]
+        new_first = remap[kept[0]] if kept else 0
+        new_nodes.append(node[:9] + (new_first, len(kept)) + node[11:])
+
+    # marksurfaces: remap, then drop duplicates a merge introduced
+    new_marks, new_leaves = [], []
+    for leaf in leaves:
+        first, count = leaf[8], leaf[9]
+        seen, start = [], len(new_marks)
+        for m in marks[first:first + count]:
+            mapped = face_map[m]
+            if mapped not in seen:
+                seen.append(mapped)
+        new_marks.extend(seen)
+        new_leaves.append(leaf[:8] + (start, len(seen)) + leaf[10:])
+
+    return new_faces, new_rings, new_nodes, new_leaves, new_marks, len(absorbed)
+
+
+def extract(input_path, output_path, pak_path=None, merge=True):
     data = pathlib.Path(input_path).read_bytes()
     if struct.unpack_from("<i", data)[0] != 29: raise ValueError("expected Quake BSP v29")
     lumps = [struct.unpack_from("<ii", data, 4 + i * 8) for i in range(15)]
@@ -72,6 +189,32 @@ def extract(input_path, output_path, pak_path=None):
                    ((palette_rgb[i+2] >> 3) << 10) for i in range(0, 768, 3)]
     else:
         palette = [((i >> 3) * 0x421) for i in range(256)]
+    # Explicit vertex ring per face.
+    #
+    # At runtime a face's vertices are otherwise reached through
+    # surfedge -> edge -> vertex: three dependent loads across ROM and EWRAM,
+    # walked once to build the transform list and again to project. The ring
+    # is fixed at build time, so emit it directly and let the GBA read one
+    # halfword per vertex. Rings are also what makes merging possible: a merged
+    # face is no longer expressible as a run of the original surfedges.
+    rings = []
+    normals = []
+    for plane, side, first, count, texture_info, *_ in faces:
+        ring = []
+        for directed_edge in surfedges[first:first + count]:
+            edge = edges[abs(directed_edge)]
+            ring.append(edge[0] if directed_edge >= 0 else edge[1])
+        rings.append(ring)
+        n = planes[plane][:3]
+        normals.append(tuple(-c for c in n) if side else n)
+
+    if merge:
+        faces, rings, nodes, leaves, marks, absorbed = merge_coplanar_faces(
+            faces, rings, normals, vertices, nodes, leaves, marks)
+        print(f"  merged {absorbed} coplanar faces away "
+              f"({100.0 * absorbed / (len(faces) + absorbed):.1f}%), "
+              f"{len(faces)} remain")
+
     lines = ["/* Generated from a Quake 1 BSP; do not edit. */",
              "#ifndef BSP_WIREFRAME_MAP_H", "#define BSP_WIREFRAME_MAP_H", "enum {"]
     counts = [("VERTEX", vertices), ("EDGE", edges), ("SURFEDGE", surfedges),
@@ -101,20 +244,11 @@ def extract(input_path, output_path, pak_path=None):
         v = (a[4] * wx + a[5] * wy + a[6] * wz + a[7]) >> 4
         return u, v
 
-    # Explicit vertex ring per face.
-    #
-    # At runtime a face's vertices are otherwise reached through
-    # surfedge -> edge -> vertex: three dependent loads across ROM and EWRAM,
-    # walked once to build the transform list and again to project. The ring
-    # is fixed at build time, so emit it directly and let the GBA read one
-    # halfword per vertex.
     face_vertex_ring = []
     face_values = []
-    for plane, side, first, count, texture_info, *_ in faces:
-        vertex_ids = []
-        for directed_edge in surfedges[first:first + count]:
-            vertex_ids.extend(edges[abs(directed_edge)])
-        points = [vertices[index] for index in set(vertex_ids)]
+    for face_index, (plane, side, first, count, texture_info, *_) in enumerate(faces):
+        ring = rings[face_index]
+        points = [vertices[index] for index in ring]
         center = tuple(sum(point[axis] for point in points) / len(points) for axis in range(3))
         radius = max(math.sqrt(sum((point[axis] - center[axis]) ** 2 for axis in range(3))) for point in points)
         # Per-face texture origin, as Quake's texturemins does. Absolute world
@@ -123,14 +257,12 @@ def extract(input_path, output_path, pak_path=None):
         # The base must be a whole multiple of the (power-of-two) texture size
         # so masking the low bits still wraps to exactly the same texel.
         width, height = textures[texinfo[texture_info][8]][1:3]
-        uv = [runtime_uv_q8(vertices[index], texture_info) for index in set(vertex_ids)]
+        uv = [runtime_uv_q8(vertices[index], texture_info) for index in ring]
         u_base = ((min(u for u, _ in uv) >> 8) // width) * width
         v_base = ((min(v for _, v in uv) >> 8) // height) * height
         ring_start = len(face_vertex_ring)
-        for directed_edge in surfedges[first:first + count]:
-            edge = edges[abs(directed_edge)]
-            face_vertex_ring.append(edge[0] if directed_edge >= 0 else edge[1])
-        face_values.append(f"{{{plane}, {side}, {first}, {count}, {texture_info}, {round(center[0])}, "
+        face_vertex_ring.extend(ring)
+        face_values.append(f"{{{plane}, {side}, {first}, {len(ring)}, {texture_info}, {round(center[0])}, "
                            f"{round(center[1])}, {round(center[2])}, {math.ceil(radius)}, "
                            f"{u_base << 8}, {v_base << 8}, {ring_start}}}")
     emit(lines, "static const MapFace bsp_faces[BSP_FACE_COUNT]", face_values, 2)
@@ -151,4 +283,7 @@ def extract(input_path, output_path, pak_path=None):
     pathlib.Path(output_path).write_text("\n".join(lines) + "\n")
     print(f"BSP package: {len(vertices)} vertices, {len(edges)} edges, {len(faces)} faces, {len(leaves)} leaves")
 
-if __name__ == "__main__": extract(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+if __name__ == "__main__":
+    extract(sys.argv[1], sys.argv[2],
+            sys.argv[3] if len(sys.argv) > 3 else None,
+            merge="--no-merge" not in sys.argv)
