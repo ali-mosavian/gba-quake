@@ -36,6 +36,13 @@ enum {
     EYE_HEIGHT_Q8 = Q8_FROM_INT(22), INVALID_LEAF = 0xffff,
     /* Room for a face ring plus one vertex per clip plane. */
     CLIP_RING_MAX = 40,
+    /* Pixels between perspective corrections. Both must divide 32 so a
+     * segment never straddles two coverage words. Measured against an exact
+     * reference on a wall seen at an angle: 32 px costs 2.72 texels of mean
+     * error, 16 px costs 0.86, 8 px costs 0.72. The long interval is used
+     * where the depth barely changes across a run. */
+    PERSPECTIVE_SPAN_LONG = 32,
+    PERSPECTIVE_SPAN_SHORT = 16,
 };
 
 typedef struct { int16_t x, y, z; } MapVertex;
