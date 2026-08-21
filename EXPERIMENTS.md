@@ -141,6 +141,14 @@ spawn and ~+31% at two other yaws, ~2,900 cycles per extra accepted face.
 
 ## Measurement traps
 
+- **mGBA cannot display beam-raced spans, in either frontend.** The trace
+  build proves the feeder issues every command on schedule (pass N starts at
+  VCOUNT N-1, ends in order), yet both the SDL and Qt frontends show
+  uniform-in-Y striped bands: mid-scanline affine register writes are not
+  applied at sub-scanline granularity. mGBA also does not emulate the HBlank
+  DMA pair restarting timer 0 (the timer free-runs and wraps every ~53
+  lines). Both mechanisms are hardware-validated by the exact-quad test;
+  for this technique the emulator can only validate data, never the picture.
 - **SuperCard SDRAM cannot serve fast ROM wait states.** WAITCNT = 0x4317 as
   the renderer's first act means the next instruction fetch misreads and the
   machine white-screens before drawing anything. The `_sc` targets never

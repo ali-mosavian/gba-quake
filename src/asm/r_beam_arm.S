@@ -93,8 +93,34 @@ raster_beam_frame:
 2:  ldrh    r0, [r4, #REG_DISPSTAT_OFF]
     tst     r0, #DISPSTAT_HBLANK
     beq     2b
+#ifdef BEAM_CPU_TIMER
+    /* mGBA does not model the DMA pair restarting timer 0 at HBlank: the
+     * timer free-runs and wraps every 65,536 cycles, so command deadlines
+     * go stale in ~53-line bands that drift frame to frame. On hardware the
+     * DMA anchor is validated and jitter-free; for emulator viewing this
+     * variant restarts the timer here, from the polled HBlank edge, at the
+     * cost of that poll's ~7-cycle granularity -- about one logical pixel
+     * of per-line phase noise. */
+    mov     r0, #0
+    strh    r0, [r3, #2]
+    mov     r0, #0x80
+    strh    r0, [r3, #2]
+#endif
     cmp     r8, #0
     beq     .Lpass_done
+#ifdef BEAM_TRACE
+    /* Trace: one word per pass, VCOUNT at pass start in the low byte and the
+     * screen line in the high half, appended to a ring the host reads. */
+    ldr     r0, =beam_trace
+    ldr     r2, [r0]
+    add     r2, r2, #4
+    and     r2, r2, #0x3fc
+    str     r2, [r0]
+    ldrh    r1, [r4, #REG_VCOUNT_OFF]
+    orr     r1, r1, r5, lsl #16
+    add     r0, r0, r2
+    str     r1, [r0]
+#endif
     ldrsh   r0, [r11, #2]
     strh    r0, [r4, #REG_BG2PA_OFF]
     ldrsh   r0, [r11, #4]
@@ -139,6 +165,20 @@ raster_beam_frame:
     b       .Lnext_command
 
 .Lpass_done:
+#ifdef BEAM_TRACE
+    /* And VCOUNT plus timer at pass end, in the following slot. */
+    ldr     r0, =beam_trace
+    ldr     r2, [r0]
+    add     r2, r2, #4
+    and     r2, r2, #0x3fc
+    str     r2, [r0]
+    ldrh    r1, [r4, #REG_VCOUNT_OFF]
+    ldrh    r12, [r3]
+    orr     r1, r1, r12, lsl #16
+    orr     r1, r1, #0x8000
+    add     r0, r0, r2
+    str     r1, [r0]
+#endif
     add     r5, r5, #1
     subs    r6, r6, #1
     bne     .Lfeed_pass
@@ -156,6 +196,12 @@ raster_beam_frame:
     bx      lr
 .size raster_beam_frame, .-raster_beam_frame
 
+#ifdef BEAM_TRACE
+.align 2
+.global beam_trace
+beam_trace:
+    .space 0x404
+#endif
 .align 2
 timer_stop_word:
     .word 0x00000000
