@@ -200,11 +200,13 @@ static Vector slide_move(Vector position, Vector *velocity)
         Trace trace = trace_player(position, end);
 
         if (trace.all_solid) {          /* wedged: give up this step */
+            COUNT(wedged_steps, 1);
             velocity->z = 0;
             return position;
         }
         if (trace.fraction > 0) position = trace.end;
         if (trace.fraction >= TRACE_ONE) break;
+        COUNT(blocked_steps, 1);
 
         time_left -= multiply_q16(time_left, trace.fraction);
 

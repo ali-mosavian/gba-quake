@@ -91,6 +91,11 @@ typedef struct {
 
 #include "../generated/bsp_wireframe_map.h"
 
+#ifdef BSP_PROFILE_COUNTS
+#define COUNT(counter, amount) ((counter) += (amount))
+#else
+#define COUNT(counter, amount) ((void)0)
+#endif
 #define EWRAM __attribute__((section(".ewram"), aligned(4)))
 /* Plain .bss lands in IWRAM under the devkitARM GBA script. IWRAM is a 32-bit
  * bus at one cycle per word; EWRAM is 16-bit and costs about six. Anything
@@ -147,6 +152,10 @@ static uint16_t degenerate_face_count;
 static uint32_t drawn_face_count, drawn_row_count, drawn_span_count;
 /* How often the step-up branch of walk_move actually won. */
 static uint32_t steps_climbed;
+/* wedged_steps: the trace reported the whole move inside solid and the
+ * step was abandoned. blocked_steps: the move hit something and was
+ * clipped, which is normal. */
+static uint32_t wedged_steps, blocked_steps;
 static uint32_t pixel_iteration_count, texel_sample_count;
 static uint32_t span_clear_count, span_hidden_count, span_mixed_count;
 static uint32_t texture_rom_fallbacks, near_clipped_faces;
@@ -174,6 +183,8 @@ typedef struct {
     uint32_t steps_climbed;
     uint32_t total_substeps;
     int32_t player_yaw_q8;
+    int32_t player_speed;
+    uint32_t wedged_steps, blocked_steps;
 } BspProfile;
 EWRAM volatile BspProfile bsp_profile;
 

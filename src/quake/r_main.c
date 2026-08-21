@@ -40,7 +40,7 @@ static void update_player(Player *player, uint16_t keys, uint16_t pressed,
     player->yaw_q8 += turn * TURN_RATE_Q8 * (int)substeps;
 
     int forward = (keys & KEY_UP ? 1 : 0) - (keys & KEY_DOWN ? 1 : 0);
-    int strafe = (keys & KEY_B ? 1 : 0) - (keys & KEY_A ? 1 : 0);
+    int strafe = (keys & KEY_R ? 1 : 0) - (keys & KEY_L ? 1 : 0);
     uint8_t yaw = player_yaw(player);
     int sine = sine_q14[yaw];
     int cosine = sine_q14[(uint8_t)(yaw + 64)];
@@ -48,7 +48,7 @@ static void update_player(Player *player, uint16_t keys, uint16_t pressed,
     int32_t wish_y = forward * sine + strafe * cosine;
 
     for (unsigned step = 0; step < substeps; ++step)
-        player_step(player, wish_x, wish_y, (pressed & KEY_R) != 0);
+        player_step(player, wish_x, wish_y, (pressed & KEY_A) != 0);
 }
 #endif
 
@@ -104,7 +104,9 @@ int main(void)
         {
             static uint32_t walk_frame;
             uint32_t step = walk_frame++;
-            uint16_t scripted = (step % 128 < 96) ? KEY_UP : KEY_RIGHT;
+            /* Walk, then turn a little, so walls are met at a range of
+             * angles rather than always head-on. */
+            uint16_t scripted = (step % 160 < 144) ? KEY_UP : KEY_RIGHT;
             update_player(&player, scripted, 0, bsp_profile.total_cycles);
             camera_x = player.position.x;
             camera_y = player.position.y;
@@ -191,9 +193,11 @@ int main(void)
             player.position.x, player.position.y, player.position.z,
             player.velocity.z, player.on_ground, last_substeps,
             player_contents_now, solid_frames, steps_climbed,
-            total_substeps, player.yaw_q8
+            total_substeps, player.yaw_q8,
+            approximate_length(player.velocity.x, player.velocity.y),
+            wedged_steps, blocked_steps
 #else
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 #endif
         };
 

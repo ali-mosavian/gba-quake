@@ -34,7 +34,8 @@ FIELDS = [
     ("player_x", "i"), ("player_y", "i"), ("player_z", "i"),
     ("player_velocity_z", "i"), ("player_on_ground", "I"), ("player_substeps", "I"),
     ("player_contents", "i"), ("player_solid_frames", "I"), ("steps_climbed", "I"),
-    ("total_substeps", "I"), ("player_yaw_q8", "i"),
+    ("total_substeps", "I"), ("player_yaw_q8", "i"), ("player_speed", "i"),
+    ("wedged_steps", "I"), ("blocked_steps", "I"),
 ]
 LAYOUT = "<" + "".join(code for _, code in FIELDS[:19]) + "2x" + "".join(code for _, code in FIELDS[19:])
 

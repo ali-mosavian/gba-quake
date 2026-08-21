@@ -1,11 +1,7 @@
 /* Texture-plane math, scan conversion, and the bit-exact C reference drawer. */
 /* Work counters are opt-in: tallying them costs about 157K cycles a frame,
- * which is a quarter of the entire 30 FPS budget. */
-#ifdef BSP_PROFILE_COUNTS
-#define COUNT(counter, amount) ((counter) += (amount))
-#else
-#define COUNT(counter, amount) ((void)0)
-#endif
+ * which is a quarter of the entire 30 FPS budget. COUNT is defined in
+ * r_state.c so the movement code can use it too. */
 /* x/y are the snapped pixel the coverage and edge walkers use; xq8/yq8 are
  * where the vertex actually projected. The gradient fit must use the sub-pixel
  * position, otherwise the fitted plane shears by up to half a pixel of lever
