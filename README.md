@@ -545,128 +545,77 @@ progressively remove stages so the cost ladder can be attributed.
 
 ## Performance status
 
-At the `dm1` spawn, with the corrected texturing:
+At the `dm1` spawn, with correct back-face culling and the corrected texturing:
 
 ```text
-total                      983,268 cycles     17.07 FPS
-  clear                        3,970     0.4%
-  BSP/PVS rebuild              5,876     0.6%
-  face culling                60,925     6.2%
-  vertex transform            65,872     6.7%
-  textured rendering         788,470    80.2%
-  2x expansion                58,131     5.9%
+stage                                   cycles   share
+framebuffer clear                        3,970    0.2%
+BSP/PVS rebuild                          5,884    0.3%
+face culling                            81,814    4.2%
+vertex transform                        76,344    3.9%
+face front end (ring/uv/project)       290,892   14.8%
+fit triple + polygon call               94,165    4.8%
+gradient solve                          81,824    4.2%
+edge walkers                            77,704    3.9%
+row scan conversion                    262,075   13.3%
+span setup + fill                      937,926   47.6%
+2x expansion                            58,123    2.9%
+TOTAL                                1,970,721            8.51 FPS
 ```
 
-The work counters explain the shape of that number:
+Work counters:
 
 ```text
-faces drawn 115 | rows 1,008 | spans 1,151 | pixel iterations 6,362 | texels 4,951
+candidates 668 | accepted 195 | drawn faces 160 | rows 1,825 | spans 2,328
+texels 9,599 | spans clear 1,234 / hidden 792 / mixed 302 | near-clipped faces 58
 ```
 
-**This renderer is setup-bound, not fill-bound.** Fewer than 6,400 pixel
-iterations are performed per frame, yet rendering costs 1.14M cycles: roughly
-93% is per-face and per-row setup. `dm1` at 120x80 presents 115 faces averaging
-43 drawn pixels each, so per-face setup never amortises. Optimising the texel
-loop — the obvious target — cannot move this.
+Per unit: 122 cycles a culled candidate, 168 a transformed vertex, **3,404 a
+drawn face**, 144 a row, **403 a span**.
 
-Retained optimisations, each measured:
+### What the true workload changed
 
-- One determinant reciprocal shared by all six gradients instead of
-  re-normalising per gradient: **-520K cycles**.
-- Span stepping derived from the gradients rather than a second perspective
-  endpoint plus two span divisions: **-47K**.
-- `LDM`/`STM` bursts in the framebuffer clear and 2x expansion: **-37K**,
-  bit-identical output.
-- **Logical framebuffer and coverage bitmap moved from EWRAM to IWRAM**:
-  **-46K** (clear -12K, expansion -12K, rendering -22K). IWRAM is a 32-bit bus
-  at one cycle per word against EWRAM's 16-bit at roughly six. Plain `.bss`
-  lands in IWRAM under the devkitARM GBA script, so this is just dropping the
-  `EWRAM` attribute. IWRAM use is 19.3KB of 32KB; EWRAM fell to 233.5KB.
-- Texture width, height and wrap masks hoisted into locals for the whole
-  polygon instead of being re-read from the ROM descriptor: **-74K**.
-- **Length-specialised span fillers**: a run known to be fully uncovered
-  dispatches once into fully unrolled straight-line code (one fall-through body
-  covering lengths 1..32) and needs no per-pixel coverage test, recording the
-  whole run with a single mask OR: **-15K**.
-- **Texel row offset without a multiply**, taken from the mgl 8-bit affine
-  span filler (`src/cfmt/b8/8plxt.asm`), which keeps the v integer already
-  shifted by log2(width) and wraps it with a mask shifted to match, so the x86
-  addressing mode adds row and column for free. ARM cannot add two index
-  registers in one load, but it gets the shift free inside the AND via the
-  barrel shifter, so the row multiply still disappears: **-12K**, bit-exact.
-  Masking a pre-shifted value with `(height-1) << k` is exactly equivalent to
-  masking then shifting -- the mask's low zero bits discard precisely the
-  fractional bits the shift raised. The generated inner loop is now seven
-  instructions with no multiply, which is the ARM floor for this addressing:
+Every figure above predates nothing -- this is the first ladder measured on a
+scene that draws all its geometry. Against the old half-scene ladder:
 
-  ```asm
-  and  r4, r10, r3, asr #8      @ row offset, v pre-scaled + shifted mask
-  and  r5, r9,  r2, asr #8      @ column
-  add  r4, r8, r4               @ texture base + row
-  ldrb r4, [r4, r5]             @ texel
-  strb r4, [lr], #1             @ pixel
-  add  r3, r3, r1               @ v += dv
-  add  r2, r2, r0               @ u += du
-  ```
-- **Game Pak wait states and the prefetch buffer**: `REG_WAITCNT` was never
-  written, so every ROM access ran at the BIOS default of 4/2 with the
-  prefetcher off. Setting 3/1 with prefetch enabled is **-25K** for one
-  register write. (The bandwidth table below always assumed this setting; the
-  code did not actually apply it.)
-- **One-wait-state EWRAM** via the undocumented `0x04000800`: **-29K**. See the
-  caveat on `MEMCTRL_FAST_EWRAM` in `src/gba_hardware.h` -- it is not a
-  documented register and a DS in GBA mode hangs on it.
-- **Early rejection of hidden spans** using that same mask, tested *before* any
-  perspective work: **-42K**. Of 1,187 segments, 546 are fully clear, 405 are
-  fully hidden and 236 are mixed, so a third skip four reciprocal multiplies
-  each.
+- **Span setup and fill went from about a third of the frame to 47.6%.** The
+  renderer is no longer purely setup-bound at the top level.
+- **Per-unit costs barely moved** (403 cycles a span against ~390 before, 144
+  a row against ~170). There is simply about twice the work. That matters:
+  it means the earlier optimisation results still hold, and so do the
+  measured dead ends.
+- Spans still average **4.1 texels**, down from 5.5. So *within* the span
+  bucket the cost is still per-span setup, not per-pixel work -- packing
+  wider stores or shortening the pixel loop remains the wrong target.
+- **58 of 160 drawn faces now take the frustum clip path**, against 4 of 122
+  before. Large near-field walls are exactly what the old scene was missing,
+  so this cost was never exercised. It sits inside the face front end.
 
-Measured and reverted:
+The reverted experiments were all rejected for reasons the new numbers do not
+overturn: the scan-conversion rewrites lost to per-face amortisation over
+11.4 rows a face (was 8.8, still far too few), wide stores lost on spans that
+are now *shorter*, and the assembly span kernel lost on state marshalling,
+which is workload-independent.
 
-- **The span filler as hand-written ARM in IWRAM**
-  (`src/asm/d_span_arm.S`, kept out of the build). Written at the per-scanline
-  boundary, which is the widest one short of the whole polygon, and verified
-  **bit-exact** against the C kernel -- and still **57K cycles slower**
-  (1,312,087 against 1,254,964). The sweep state (current x, row end, and the
-  three plane accumulators) has to live in a stack frame and be reloaded and
-  stored on every segment, about fifteen extra transfers across ~1,200
-  segments, plus a prologue and epilogue on each of ~1,000 rows. Inlined into
-  the polygon routine, the compiler keeps all of that in registers for the
-  whole face and never marshals it. This repeats, one level up, the lesson of
-  the earlier per-segment kernel: assembly only wins here at a boundary wide
-  enough that the state never round-trips, which means the whole polygon.
-- **Four texels packed into one wide store**, structured as `TEXEL` /
-  `SHIFT_ONE` / `WRITE_{ONE,TWO,FOUR}` macros with the run split into a lead,
-  a word-aligned body and a tail. Bit-exact, and attributed by measuring the
-  same structure twice:
+### Where the remaining time is
 
-  | variant | cycles |
-  |---|---:|
-  | flat 1..32 dispatch, byte stores | **1,254,964** |
-  | lead/body/tail dispatch, byte stores | 1,284,794 |
-  | lead/body/tail dispatch, wide stores | 1,281,211 |
+Ranked by size, with what each would need:
 
-  The wider stores are worth a real but tiny **-3.6K**; the alignment handling
-  and the three dispatches they require cost **+30K**, ten times as much. The
-  framebuffer is in IWRAM, where a byte store and a word store both take one
-  cycle, so packing only trades three stores for three ORs. Alignment cannot be
-  skipped either: an unaligned wide store on ARM7TDMI does not fault, it writes
-  to the aligned address. The macro decomposition itself was kept -- it states
-  the fetch/step/store split explicitly -- with the single flat dispatch.
-- **An earlier ad-hoc attempt at the same idea**, with the aligned-quad test
-  written inline in a loop rather than in the dispatch. Tried with the framebuffer in
-  IWRAM (1,115K -> 1,138K) and again with it back in EWRAM (1,137K -> 1,145K);
-  slower both ways. Segments average about five pixels, so an aligned quad that
-  is entirely free rarely exists, and once the framebuffer is in IWRAM a byte
-  store already costs one cycle, leaving the packing shifts with nothing to
-  buy. The four texel *fetches* cannot be combined at all: `u` and `v` step
-  independently, so the texels are not adjacent in the texture.
-- **Active-edge scan conversion** (sort the edge walkers per face, maintain a
-  compact active set). Correct and bit-identical, but **6.5% slower**: faces
-  average only 8.8 rows, so the per-face sort never pays for itself. This is
-  the clearest evidence that the bottleneck is per-face, not per-row.
-- Hoisting the texinfo lookup out of the per-vertex loop: 0.26%, below the 1%
-  retention threshold; kept only because it simplifies the face interface.
+1. **Span setup, 938K over 2,328 spans.** 792 are fully hidden and already
+   cost only a mask test. The 1,536 that draw cost roughly 610 cycles each for
+   about six texels, so the four reciprocal multiplies and two span divides
+   per segment dominate. Carrying the previous segment's far endpoint into the
+   next as its near endpoint would halve them.
+2. **Per-face work, 545K over 160 faces (27.6%).** 3,404 cycles a face, of
+   which the front end is 1,818. The clip path taken by 58 faces is the part
+   never previously measured.
+3. **Row scan conversion, 262K over 1,825 rows.** Three restructurings have
+   already lost here; the per-face amortisation is still too thin.
+
+30 FPS is 559,000 cycles, so the frame is **3.5x over budget** -- not the ~2x
+the half-empty scene suggested. The earlier estimate of a 20-23 FPS
+runtime-only ceiling was made against that scene and should be read as
+optimistic.
 
 ### The BSP and geometry side
 
