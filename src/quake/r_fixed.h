@@ -8,7 +8,9 @@
 #define TO_F32(value)            ((int64_t)((value) * 4294967296.0))
 
 #define Q8_ONE                  (1 << 8)
-#define Q8_FROM_INT(value)      ((int32_t)(value) << 8)
+/* Multiplication, not a shift: e1m7's spawn sits at negative x, and shifting
+ * a negative value is formally undefined. The compiler emits the same lsl. */
+#define Q8_FROM_INT(value)      ((int32_t)(value) * 256)
 #define Q8_TO_INT(value)        ((int32_t)((value) >> 8))
 #define Q8_MUL(a, b)            ((int32_t)(((int64_t)(a) * (b)) >> 8))
 

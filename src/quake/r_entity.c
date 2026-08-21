@@ -14,7 +14,7 @@
 enum {
     ENTITY_CLOSED = 0, ENTITY_OPENING, ENTITY_OPEN, ENTITY_CLOSING,
     ENTITY_KIND_DOOR = 0, ENTITY_KIND_BUTTON, ENTITY_KIND_SECRET,
-    ENTITY_KIND_TELEPORT,
+    ENTITY_KIND_TELEPORT, ENTITY_KIND_WALL,
     /* How far outside a brush's box the player's presence counts as a
      * touch. Quake spawns explicit trigger fields around doors; a fixed
      * apron approximates them well enough for these six movers. */
@@ -33,7 +33,8 @@ static EntityState entity_states[BSP_ENTITY_COUNT];
 
 static int entity_is_solid(const MapEntity *entity)
 {
-    return entity->kind <= ENTITY_KIND_SECRET;
+    return entity->kind <= ENTITY_KIND_SECRET ||
+           entity->kind == ENTITY_KIND_WALL;
 }
 
 /* Current world offset of one axis, Q8. */
@@ -61,12 +62,17 @@ static void entity_fire(uint16_t target)
     }
 }
 
-static int entity_player_near(const MapEntity *entity, const Vector *position)
+/* Against the mover's CURRENT box, not its built one: a plat rests a full
+ * travel below where it was built, and testing the built box meant the
+ * player standing on the lowered plat was nowhere near it. */
+static int entity_player_near(unsigned index, const Vector *position)
 {
+    const MapEntity *entity = &bsp_entities[index];
     for (unsigned axis = 0; axis < 3; ++axis) {
+        int32_t offset = entity_offset_q8(index, axis);
         int32_t value = (&position->x)[axis];
-        int32_t low = Q8_FROM_INT(entity->mins[axis] - ENTITY_TOUCH_APRON);
-        int32_t high = Q8_FROM_INT(entity->maxs[axis] + ENTITY_TOUCH_APRON);
+        int32_t low = Q8_FROM_INT(entity->mins[axis] - ENTITY_TOUCH_APRON) + offset;
+        int32_t high = Q8_FROM_INT(entity->maxs[axis] + ENTITY_TOUCH_APRON) + offset;
         if (value < low || value > high) return 0;
     }
     return 1;
@@ -83,7 +89,7 @@ static int entity_update(uint32_t ticks, const Vector *position,
         const MapEntity *entity = &bsp_entities[i];
         EntityState *state = &entity_states[i];
         if (entity->kind == ENTITY_KIND_TELEPORT) {
-            if (position && entity_player_near(entity, position) &&
+            if (position && entity_player_near(i, position) &&
                 teleport_to) {
                 teleport_to->x = Q8_FROM_INT(BSP_TELEPORT_X);
                 teleport_to->y = Q8_FROM_INT(BSP_TELEPORT_Y);
@@ -102,7 +108,8 @@ static int entity_update(uint32_t ticks, const Vector *position,
         if (position && resting &&
             (entity->kind == ENTITY_KIND_BUTTON ||
              entity->kind == ENTITY_KIND_SECRET || !entity->targetname) &&
-            entity_player_near(entity, position)) {
+            entity->kind != ENTITY_KIND_WALL &&
+            entity_player_near(i, position)) {
             int resting_open = (entity->flags & 1) ? state->state == ENTITY_OPEN
                                                    : state->state == ENTITY_CLOSED;
             if (resting_open) {

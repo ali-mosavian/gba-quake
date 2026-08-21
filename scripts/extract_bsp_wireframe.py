@@ -334,9 +334,14 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
             name_ids[value] = len(name_ids)
         return name_ids[value]
 
+    # Kinds: 0 door, 1 button, 2 secret, 3 teleport, 4 static wall, 5+ skip.
+    # A plat is a door that rests at its far end: built at the top, it starts
+    # lowered and rises on approach, which is exactly the START_OPEN state
+    # machine with a touch trigger.
     KINDS = {"func_door": 0, "func_button": 1, "func_door_secret": 2,
-             "trigger_teleport": 3}
-    DEFAULTS = {0: (100, 8, 3), 1: (40, 4, 1), 2: (50, 8, 3), 3: (0, 0, 0)}
+             "trigger_teleport": 3, "func_wall": 4, "func_plat": 0}
+    DEFAULTS = {0: (100, 8, 3), 1: (40, 4, 1), 2: (50, 8, 3), 3: (0, 0, 0),
+                4: (0, 0, 0)}
     entity_values = []
     teleport = None
     for block in entity_blocks:
@@ -366,8 +371,19 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
                          math.sin(math.radians(entity_angle)), 0.0)
         size = [maxs[i] - mins[i] for i in range(3)]
         distance = abs(sum(size[i] * direction[i] for i in range(3))) - lip
-        move = [round(direction[i] * distance) for i in range(3)]
         flags = int(block.get("spawnflags", "0")) & 1
+        classname = block.get("classname", "")
+        if classname == "func_plat":
+            direction = (0.0, 0.0, -1.0)
+            distance = float(block.get("height",
+                                       maxs[2] - mins[2] - 8))
+            speed = int(float(block.get("speed", 150)))
+            wait = float(block.get("wait", 3))
+            flags = 1                       # rests lowered
+            block.pop("targetname", None)   # plats answer to touch here
+        if classname == "func_wall":
+            distance = 0                    # solid scenery; never moves
+        move = [round(direction[i] * distance) for i in range(3)]
         # The unit direction ships as Q8 so the runtime scales an offset with
         # three multiplies and no division.
         direction_q8 = [round(direction[i] * 256) for i in range(3)]
@@ -384,6 +400,7 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
                 round(maxs[0]), round(maxs[1]), round(maxs[2])))
         if kind == 3:
             teleport = block.get("target", "")
+            teleport_kind_index = len(entity_values) - 1
     # Torch flames, for runtime flicker lights. The baked lightmaps already
     # carry their static contribution; the dynamic pass only adds shimmer.
     torch_values = []
