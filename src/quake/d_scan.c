@@ -47,13 +47,30 @@ static int32_t clamp_rank(int32_t value)
 static int minimum(int a, int b) { return a < b ? a : b; }
 static int maximum(int a, int b) { return a > b ? a : b; }
 
+/* Bit length of a non-zero value, without __builtin_clz.
+ *
+ * ARMv4T has no CLZ instruction, so the builtin becomes a call to libgcc's
+ * __clzsi2 -- a Thumb routine living in ROM, reached from ARM code in IWRAM
+ * through an interworking branch. At one call per polygon edge that was most
+ * of what edge-walker construction cost. */
+static inline __attribute__((always_inline)) unsigned bit_length(uint32_t value)
+{
+    unsigned bits = 1;
+    if (value >> 16) { bits += 16; value >>= 16; }
+    if (value >> 8)  { bits += 8;  value >>= 8; }
+    if (value >> 4)  { bits += 4;  value >>= 4; }
+    if (value >> 2)  { bits += 2;  value >>= 2; }
+    if (value >> 1)  { bits += 1; }
+    return bits;
+}
+
 static int32_t divide_s64_s32(int64_t numerator, int32_t denominator)
 {
     if (!denominator) return 0;
     int negative = (numerator < 0) != (denominator < 0);
     uint64_t dividend = numerator < 0 ? (uint64_t)-numerator : (uint64_t)numerator;
     uint32_t divisor = denominator < 0 ? (uint32_t)-denominator : (uint32_t)denominator;
-    unsigned bits = 32u - (unsigned)__builtin_clz(divisor);
+    unsigned bits = bit_length(divisor);
     unsigned shift = bits > 15 ? bits - 15 : 0;
     uint32_t normalized_divisor = divisor >> shift;
     uint64_t normalized_dividend = dividend >> shift;
@@ -87,14 +104,8 @@ static PlaneSolver plane_solver(int64_t determinant)
      * produce, so measure the bit length first and shift exactly once. The
      * shift must land the value inside [2^14, 2^15): overshooting throws away
      * significant bits and silently scales every gradient. */
-    uint64_t probe = magnitude;
-    unsigned bits = 1;
-    if (probe >> 32) { bits += 32; probe >>= 32; }
-    if (probe >> 16) { bits += 16; probe >>= 16; }
-    if (probe >> 8)  { bits += 8;  probe >>= 8; }
-    if (probe >> 4)  { bits += 4;  probe >>= 4; }
-    if (probe >> 2)  { bits += 2;  probe >>= 2; }
-    if (probe >> 1)  { bits += 1; }
+    unsigned bits = (magnitude >> 32) ? 32 + bit_length((uint32_t)(magnitude >> 32))
+                                      : bit_length((uint32_t)magnitude);
     solver.shift = bits > 15 ? bits - 15 : 0;
     magnitude >>= solver.shift;
     solver.reciprocal = clipping_reciprocal_q24[magnitude];
