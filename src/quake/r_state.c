@@ -105,6 +105,20 @@ typedef struct {
      * build time so the runtime never walks surfedge -> edge -> vertex. */
     int32_t first_vertex;
 } MapFace;
+/* One moving brush: a submodel's face range and clip hull, plus the movement
+ * Quake's game code would derive for it. `move` is the closed-to-open
+ * translation in whole units; waits are 64ths of a second. */
+typedef struct {
+    uint16_t first_face, face_count;
+    int32_t hull_head;
+    uint8_t kind;                 /* 0 door, 1 button, 2 secret, 3 teleport */
+    uint8_t flags;                /* 1 = starts open */
+    uint16_t distance;            /* whole units, closed to open */
+    int16_t direction_q8[3];      /* unit move direction */
+    uint16_t speed, wait_64ths;   /* units per second; wait in 64ths */
+    uint16_t target, targetname;
+    int16_t mins[3], maxs[3];
+} MapEntity;
 /* Clip-hull node. qbsp pre-expands hull 1 by the 32x32x56 player box, so the
  * player traces through it as a single point. Negative children are contents,
  * not node indices. */
@@ -206,6 +220,13 @@ EWRAM static uint8_t vertex_outcode[BSP_VERTEX_COUNT];
 EWRAM static CameraPoint camera_cache[BSP_VERTEX_COUNT];
 EWRAM static ScreenPoint screen_cache[BSP_VERTEX_COUNT];
 IWRAM_DATA static uint8_t logical_framebuffer[SCREEN_WIDTH * SCREEN_HEIGHT];
+#ifdef BSP_TEXTURED
+/* Camera state for the entity render pass, which transforms its few dozen
+ * vertices itself: mover vertices are not in the frame's shared transform
+ * set, because no leaf references a submodel's faces. */
+static int32_t entity_camera_x, entity_camera_y, entity_camera_z;
+static int32_t entity_camera_sine, entity_camera_cosine;
+#endif
 
 static uint16_t candidate_face_count, frame_edge_count, frame_vertex_count;
 static uint16_t drawn_edge_count, accepted_face_count;

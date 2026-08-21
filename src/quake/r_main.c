@@ -114,6 +114,7 @@ int main(void)
     player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
     player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
     player.velocity.x = player.velocity.y = player.velocity.z = 0;
+    entity_init();
     /* A fixed pose to benchmark from. The scripted walk cannot be used to
      * compare two builds: they run at different speeds, so at any given
      * wall-clock second their cameras are somewhere different and the frames
@@ -180,10 +181,30 @@ int main(void)
             player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
             player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
             player.velocity.x = player.velocity.y = player.velocity.z = 0;
+    entity_init();
             player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW) + BSP_YAW_OFFSET_Q8;
             cached_camera_leaf = INVALID_LEAF;
         } else {
             update_player(&player, keys, pressed, bsp_profile.total_cycles);
+        }
+        /* Movers and the teleporter run on the same wall clock as the
+         * physics substeps, but independently: entity motion must not stall
+         * when the player stands still. */
+        {
+            static uint16_t previous_entity_tick;
+            uint16_t now = REG_TM3D;
+            uint16_t ticks = (uint16_t)(now - previous_entity_tick);
+            previous_entity_tick = now;
+            Vector teleport_to;
+            int32_t teleport_yaw = 0;
+            if (entity_update(ticks, &player.position,
+                              &teleport_to, &teleport_yaw)) {
+                player.position = teleport_to;
+                player.velocity.x = player.velocity.y = player.velocity.z = 0;
+    entity_init();
+                player.yaw_q8 = teleport_yaw;
+                cached_camera_leaf = INVALID_LEAF;
+            }
         }
         camera_x = player.position.x;
         camera_y = player.position.y;
@@ -191,6 +212,13 @@ int main(void)
         yaw = player_yaw(&player);
 #else
         (void)pressed;
+        {
+            static uint16_t previous_entity_tick;
+            uint16_t now = REG_TM3D;
+            uint16_t ticks = (uint16_t)(now - previous_entity_tick);
+            previous_entity_tick = now;
+            entity_update(ticks, 0, 0, 0);
+        }
 #endif
 
         if (++frame_stamp == 0) {
@@ -217,6 +245,13 @@ int main(void)
         }
         uint32_t after_pvs = profile_timer_read();
         build_frame_lists(camera_x, camera_y, camera_z, yaw);
+#ifdef BSP_TEXTURED
+        entity_camera_x = camera_x;
+        entity_camera_y = camera_y;
+        entity_camera_z = camera_z;
+        entity_camera_sine = sine_q14[yaw];
+        entity_camera_cosine = sine_q14[(uint8_t)(yaw + 64)];
+#endif
         uint32_t after_cull = profile_timer_read();
         transform_project_frame_vertices(camera_x, camera_y, camera_z, yaw);
         uint32_t after_transform = profile_timer_read();

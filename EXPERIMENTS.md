@@ -5,7 +5,8 @@ cycles per frame at the dm1 spawn unless noted, measured with
 `scripts/profile.py` against mGBA 0.10.5. The README carries the reasoning;
 this file is the index.
 
-Current: **1,740,274 cycles, 9.64 FPS**. 30 FPS is 559,333.
+Current: **1,892,224 cycles, 8.87 FPS** at the spawn with brush entities in
+view (the drawbridge); ~1,741K where no mover is visible. 30 FPS is 559,333.
 
 ## Kept
 
@@ -26,6 +27,17 @@ Current: **1,740,274 cycles, 9.64 FPS**. 30 FPS is 559,333.
 | Texture mip 1 | memory only: 176KB -> 44KB, no frame cost |
 | Framebuffer in IWRAM | byte and word stores both 1 cycle |
 | Hecker sub-texel correction, adaptive perspective interval | correctness |
+
+### Brush entities (doors, buttons, teleporter)
+| aspect | outcome |
+|---|---|
+| Six movers + teleporter, extracted with Quake's own movement derivation | works; states, triggers, wait times from entity keys |
+| Faces, lightmaps, texcoords all baked -- translation just works | zero new bake machinery |
+| Collision: player traces through each mover's own hull, translated | bbox pre-reject first; without it every trace walked six hulls |
+| Draw before the world, coverage-first | rooms behind doors are in the PVS, so drawing after would vanish them |
+| Entity pass stack | 2.7KB of ring buffers on the IWRAM stack overflowed into .bss and corrupted culling statics -- presenting as a 456K "speedup". EWRAM statics now |
+| `angle` variable shadowed the spawn yaw in the extractor | BSP_SPAWN_YAW came out 0; every measurement against that header was of a different scene |
+| Cost | **+151K when movers are visible, ~0 otherwise.** The clip/project helpers run as out-of-line ROM-ARM copies for the entity path; inlining them into IWRAM would spend stack headroom already at 4.7K |
 
 ## Rejected
 

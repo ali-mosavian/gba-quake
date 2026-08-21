@@ -41,7 +41,7 @@ def pak_entry(path, wanted):
 
 
 def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
-                         allow_concave=False):
+                         allow_concave=False, world_face_limit=None):
     """Merge edge-adjacent coplanar faces that share a texinfo, keeping every
     merged polygon convex.
 
@@ -59,6 +59,8 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
     def cross(a, b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
     def dot(a, b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
     EPS = 1e-3
+    if world_face_limit is None:
+        world_face_limit = len(faces)
 
     rejected = collections.Counter()
 
@@ -111,6 +113,11 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
 
     groups = collections.defaultdict(list)
     for i, (plane, side, first, count, tinfo, *_) in enumerate(faces):
+        # Submodel faces -- doors, buttons, platforms -- never merge: they
+        # move at runtime, and a merge with a world face (or a face of a
+        # different submodel) would weld a mover to something that stays.
+        if i >= world_face_limit:
+            continue
         groups[(plane, side, tinfo)].append(i)
 
     survivor = list(range(len(faces)))
@@ -304,13 +311,87 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
     if merge:
         faces, rings, nodes, leaves, marks, absorbed, face_map = merge_coplanar_faces(
             faces, rings, normals, vertices, nodes, leaves, marks,
-            allow_concave=concave_merge)
+            allow_concave=concave_merge, world_face_limit=models[0][15])
         print(f"  merged {absorbed} coplanar faces away "
               f"({100.0 * absorbed / (len(faces) + absorbed):.1f}%), "
               f"{len(faces)} remain"
               f"{' (concave allowed)' if concave_merge else ''}; "
               f"ring vertices {sum(len(r) for r in rings)}, "
               f"longest ring {max(len(r) for r in rings)}")
+
+    # Brush entities: the map's own moving parts. Each func_* entity owns a
+    # submodel -- a face range and a clip hull -- and a movement derived the
+    # way Quake's game code derives it: a direction from "angle" (-1 up, -2
+    # down, otherwise degrees in the horizontal plane) and a distance from
+    # the brush's size along that direction minus "lip". Waits are stored in
+    # 64ths of a second so an 8-second door fits a halfword.
+    entity_text = data[lumps[ENTITIES][0]:sum(lumps[ENTITIES])].decode("latin1", "ignore")
+    entity_blocks = [dict(re.findall(r'"([^"]*)"\s+"([^"]*)"', block))
+                     for block in re.findall(r"\{(.*?)\}", entity_text, re.S)]
+    name_ids = {"": 0}
+    def name_id(value):
+        if value not in name_ids:
+            name_ids[value] = len(name_ids)
+        return name_ids[value]
+
+    KINDS = {"func_door": 0, "func_button": 1, "func_door_secret": 2,
+             "trigger_teleport": 3}
+    DEFAULTS = {0: (100, 8, 3), 1: (40, 4, 1), 2: (50, 8, 3), 3: (0, 0, 0)}
+    entity_values = []
+    teleport = None
+    for block in entity_blocks:
+        model = block.get("model", "")
+        if not model.startswith("*"):
+            continue
+        kind = KINDS.get(block.get("classname", ""), 4)
+        index = int(model[1:])
+        first, count = models[index][14], models[index][15]
+        mins = models[index][0:3]
+        maxs = models[index][3:6]
+        speed, lip, wait = DEFAULTS.get(kind, (0, 0, 0))
+        speed = int(float(block.get("speed", speed)))
+        lip = int(float(block.get("lip", lip)))
+        wait = float(block.get("wait", wait))
+        # NOT named `angle`: that is the spawn yaw from player_spawn(), and
+        # shadowing it here once emitted BSP_SPAWN_YAW = 0 -- the camera
+        # spawned facing backwards and every measurement made against that
+        # header was of a different scene.
+        entity_angle = float(block.get("angle", "0"))
+        if entity_angle == -1:
+            direction = (0.0, 0.0, 1.0)
+        elif entity_angle == -2:
+            direction = (0.0, 0.0, -1.0)
+        else:
+            direction = (math.cos(math.radians(entity_angle)),
+                         math.sin(math.radians(entity_angle)), 0.0)
+        size = [maxs[i] - mins[i] for i in range(3)]
+        distance = abs(sum(size[i] * direction[i] for i in range(3))) - lip
+        move = [round(direction[i] * distance) for i in range(3)]
+        flags = int(block.get("spawnflags", "0")) & 1
+        # The unit direction ships as Q8 so the runtime scales an offset with
+        # three multiplies and no division.
+        direction_q8 = [round(direction[i] * 256) for i in range(3)]
+        entity_values.append(
+            "{%d, %d, %d, %d, %d, %d, {%d, %d, %d}, %d, %d, %d, %d, "
+            "{%d, %d, %d}, {%d, %d, %d}}" % (
+                face_map[first], count, models[index][10], kind, flags,
+                max(0, round(distance)),
+                direction_q8[0], direction_q8[1], direction_q8[2],
+                speed, round(wait * 64),
+                name_id(block.get("target", "")),
+                name_id(block.get("targetname", "")),
+                round(mins[0]), round(mins[1]), round(mins[2]),
+                round(maxs[0]), round(maxs[1]), round(maxs[2])))
+        if kind == 3:
+            teleport = block.get("target", "")
+    teleport_to = (0.0, 0.0, 0.0)
+    teleport_yaw = 0.0
+    for block in entity_blocks:
+        if teleport and block.get("targetname") == teleport and "origin" in block:
+            teleport_to = tuple(map(float, block["origin"].split()))
+            teleport_yaw = float(block.get("angle", "0"))
+    print(f"  {len(entity_values)} brush entities, "
+          f"teleport to {teleport_to} yaw {teleport_yaw}")
 
     lines = ["/* Generated from a Quake 1 BSP; do not edit. */",
              "#ifndef BSP_WIREFRAME_MAP_H", "#define BSP_WIREFRAME_MAP_H", "enum {"]
@@ -325,7 +406,12 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
               f"    BSP_PLAYER_HULL_HEAD = {models[0][10]},",
               f"    BSP_VISIBILITY_BYTES = {len(visibility)},",
               f"    BSP_SPAWN_X = {round(spawn[0])}, BSP_SPAWN_Y = {round(spawn[1])},",
-              f"    BSP_SPAWN_Z = {round(spawn[2])}, BSP_SPAWN_YAW = {round(angle * 256 / 360)},", "};"]
+              f"    BSP_SPAWN_Z = {round(spawn[2])}, BSP_SPAWN_YAW = {round(angle * 256 / 360)},",
+              f"    BSP_ENTITY_COUNT = {len(entity_values)},",
+              f"    BSP_TELEPORT_X = {round(teleport_to[0])},",
+              f"    BSP_TELEPORT_Y = {round(teleport_to[1])},",
+              f"    BSP_TELEPORT_Z = {round(teleport_to[2])},",
+              f"    BSP_TELEPORT_YAW = {round(teleport_yaw * 256 / 360) & 255},", "};"]
     emit(lines, "static const MapVertex bsp_vertices[BSP_VERTEX_COUNT]",
          [f"{{{round(x)}, {round(y)}, {round(z)}}}" for x, y, z in vertices], 4)
     emit(lines, "static const MapEdge bsp_edges[BSP_EDGE_COUNT]", [f"{{{a}, {b}}}" for a, b in edges], 8)
@@ -450,6 +536,8 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
                 if not (1 <= x < block.width - 1 and 1 <= y < block.height - 1):
                     luxels_out_of_range += 1
     emit(lines, "static const MapFace bsp_faces[BSP_FACE_COUNT]", face_values, 2)
+    emit(lines, "static const MapEntity bsp_entities[BSP_ENTITY_COUNT]",
+         entity_values, 1)
     print(f"  lightmap grid: {lmscale} units/luxel, {len(luxel_bytes)} luxel bytes "
           f"({len(luxel_cache)} distinct blocks), shift {luxel_shift}, "
           f"{luxels_out_of_range} vertices outside their block")

@@ -158,11 +158,130 @@ static TextureVertex project_texture_vertex(const ClipTextureVertex *source)
     return result;
 }
 
+/* Draw one mover's faces at its current offset.
+ *
+ * Movers are drawn BEFORE the world, coverage-first. The rooms behind a
+ * closed door are still in the PVS -- vis treats doors as open -- so drawing
+ * the door after the world would find its doorway already covered by the
+ * room beyond and vanish. Drawing it first is correct except where world
+ * geometry stands between the camera and the mover, which for these six
+ * (doors in doorways, buttons on walls) is a fringe case accepted as such.
+ *
+ * The vertices are transformed here rather than by the frame's batched
+ * transform: no leaf references a submodel's faces, so its vertices are
+ * never in the frame set. The offset is added in world space before the
+ * rotate; texture coordinates and lightmaps ride along unchanged because
+ * both were baked against the brush's own geometry. */
+static HOT void render_entity(unsigned index)
+{
+    const MapEntity *entity = &bsp_entities[index];
+    int32_t offset_x = entity_offset_q8(index, 0);
+    int32_t offset_y = entity_offset_q8(index, 1);
+    int32_t offset_z = entity_offset_q8(index, 2);
+    int32_t sine = entity_camera_sine, cosine = entity_camera_cosine;
+    /* One conservative sphere test for the whole mover. */
+    {
+        int32_t cx = ((entity->mins[0] + entity->maxs[0]) << 7) + offset_x;
+        int32_t cy = ((entity->mins[1] + entity->maxs[1]) << 7) + offset_y;
+        int32_t cz = ((entity->mins[2] + entity->maxs[2]) << 7) + offset_z;
+        int32_t dx = Q8_TO_INT(cx - entity_camera_x);
+        int32_t dy = Q8_TO_INT(cy - entity_camera_y);
+        int32_t dz = Q8_TO_INT(cz - entity_camera_z);
+        int radius = (entity->maxs[0] - entity->mins[0] +
+                      entity->maxs[1] - entity->mins[1] +
+                      entity->maxs[2] - entity->mins[2]) >> 1;
+        int32_t depth = (cosine * dx + sine * dy) >> 14;
+        if (depth + radius < 8) return;
+        int32_t horizontal = cosine * dy - sine * dx;
+        horizontal = (horizontal < 0 ? -horizontal : horizontal) >> 14;
+        if (horizontal > radius &&
+            (horizontal - radius) * FOCAL_LENGTH > depth * 60) return;
+        if (dz < 0) dz = -dz;
+        if (dz > radius && (dz - radius) * FOCAL_LENGTH > depth * 40) return;
+    }
+#ifdef BSP_ENTITY_CULL_ONLY
+    return;
+#endif
+    int32_t camera_ix = Q8_TO_INT(entity_camera_x - offset_x + 128);
+    int32_t camera_iy = Q8_TO_INT(entity_camera_y - offset_y + 128);
+    int32_t camera_iz = Q8_TO_INT(entity_camera_z - offset_z + 128);
+    for (unsigned f = 0; f < entity->face_count; ++f) {
+        unsigned face_index = entity->first_face + f;
+        const MapFace *face = &bsp_faces[face_index];
+        const MapPlane *plane = &bsp_planes[face->plane];
+        int flip = face->side ? -1 : 1;
+        /* Back-face: the camera in the mover's own space. */
+        int64_t side = (int64_t)flip *
+            ((int64_t)plane->nx * camera_ix + (int64_t)plane->ny * camera_iy +
+             (int64_t)plane->nz * camera_iz -
+             ((int64_t)plane->distance << 14));
+        if (side <= 0) continue;
+        unsigned count = minimum(face->edge_count, CLIP_RING_MAX - 8);
+        /* Statics, not stack: this runs on top of the world path's already
+         * deep IWRAM stack, and 2.7KB more of ring buffers before the drawer's
+         * own frame overflowed into .bss -- which corrupted the culling
+         * statics and showed up, deceptively, as a 456K cycle "speedup" from
+         * 55 vanished faces. The pass is not reentrant, so shared EWRAM
+         * buffers cost nothing but a slightly slower bus on ~40 faces. */
+        EWRAM static TextureVertex projected[CLIP_RING_MAX];
+        EWRAM static ClipTextureVertex polygon[CLIP_RING_MAX],
+                                       scratch[CLIP_RING_MAX];
+        /* Project first and clip only what crosses, exactly like the world
+         * path. The first version forced the full four-plane clip on every
+         * face -- from ARM code in ROM, where each instruction is two bus
+         * fetches -- and those two decisions together cost 170K a frame at
+         * a pose where five mover faces are visible. */
+        unsigned planes_crossed = 0;
+        for (unsigned i = 0; i < count; ++i) {
+            unsigned ring_index = (unsigned)face->first_vertex + i;
+            MapVertex world = bsp_vertices[bsp_face_vertices[ring_index]];
+            int32_t wx = Q8_FROM_INT(world.x) + offset_x - entity_camera_x;
+            int32_t wy = Q8_FROM_INT(world.y) + offset_y - entity_camera_y;
+            int32_t wz = Q8_FROM_INT(world.z) + offset_z - entity_camera_z;
+            int32_t depth = (int32_t)(((int64_t)cosine * wx +
+                                       (int64_t)sine * wy) >> 14);
+            int32_t horizontal = (int32_t)(((int64_t)cosine * wy -
+                                            (int64_t)sine * wx) >> 14);
+            polygon[i].horizontal = horizontal;
+            polygon[i].vertical = wz;
+            polygon[i].depth = depth;
+            polygon[i].u_q8 = bsp_face_texcoords[2 * ring_index];
+            polygon[i].v_q8 = bsp_face_texcoords[2 * ring_index + 1];
+            if (depth < NEAR_PLANE_Q8) { planes_crossed |= 1u; continue; }
+            projected[i] = project_texture_vertex(&polygon[i]);
+            if (projected[i].xq8 > Q8_FROM_INT(SCREEN_WIDTH)) planes_crossed |= 2u;
+            if (projected[i].xq8 < 0) planes_crossed |= 4u;
+            if (projected[i].yq8 > Q8_FROM_INT(SCREEN_HEIGHT)) planes_crossed |= 8u;
+            if (projected[i].yq8 < 0) planes_crossed |= 16u;
+        }
+        if (planes_crossed & 1u) planes_crossed = 31u;
+        if (planes_crossed) {
+            count = clip_texture_polygon(polygon, count, scratch, planes_crossed);
+            if (count < 3) continue;
+            for (unsigned i = 0; i < count; ++i)
+                projected[i] = project_texture_vertex(&polygon[i]);
+        }
+#ifndef BSP_ENTITY_NO_DRAW_CALL
+        draw_textured_polygon_reference(
+            projected, count,
+            bsp_texinfo[face->texinfo].texture,
+            &bsp_face_lights[face_index]);
+#else
+        degenerate_face_count += (uint16_t)projected[0].x;
+#endif
+    }
+}
+
 static HOT void render_textured_faces(void)
 {
     for (unsigned y = 0; y < SCREEN_HEIGHT; ++y)
         for (unsigned word = 0; word < 4; ++word)
             texture_coverage[y][word] = 0;
+#ifndef BSP_NO_ENTITY_DRAW
+    for (unsigned entity = 0; entity < BSP_ENTITY_COUNT; ++entity)
+        if (entity_is_solid(&bsp_entities[entity]))
+            render_entity(entity);
+#endif
     for (unsigned accepted = 0; accepted < accepted_face_count; ++accepted) {
         const RuntimeFace *face = &runtime_faces[frame_faces[accepted]];
         if (face->edge_count < 3) continue;

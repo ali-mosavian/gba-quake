@@ -44,6 +44,8 @@ typedef struct {
     uint8_t all_solid, start_solid, hit;
 } Trace;
 
+static void entity_clip_trace(Vector start, Vector end, Trace *trace);
+
 /* Signed distance from a point to a clip plane, in Q8 units.
  *
  * Uses the Q8 plane distance rather than the renderer's whole-unit one: half
@@ -149,6 +151,10 @@ static Trace trace_player(Vector start, Vector end)
     trace.start_solid = 0;
     trace.hit = 0;
     recursive_hull_check(BSP_PLAYER_HULL_HEAD, 0, TRACE_ONE, start, end, &trace);
+    /* Moving brushes clip the same trace through their own hulls. Declared
+     * here and defined in r_entity.c, which the unity build includes after
+     * this file. */
+    entity_clip_trace(start, end, &trace);
     if (trace.fraction == TRACE_ONE) trace.end = end;
     return trace;
 }

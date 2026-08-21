@@ -8,6 +8,7 @@
 #include "r_bsp.c"
 #include "r_clip.c"
 #include "p_move.c"
+#include "r_entity.c"
 #include "d_draw.c"
 #ifdef BSP_TEXTURED
 #include "d_scan.c"
