@@ -106,15 +106,33 @@ spawn and ~+31% at two other yaws, ~2,900 cycles per extra accepted face.
 
 ## Open leads
 
-- **Beam-raced PPU spans: timing PROVEN ON HARDWARE.** On a real GBA
+- **Beam-raced PPU spans: DISPROVEN ON HARDWARE, at the register level.**
+  The full arc, so nobody walks it again. Cycle-exact feeding works (see
+  below). The display list, atlas and IWRAM feeder all work -- the hardware
+  photo of `beam_frame` showed span boundaries at different columns per line,
+  following the display list. But the picture stayed corrupted through a
+  timing recalibration and atlas padding, and `beam_xytest` isolated why:
+  **BG2X/BG2Y writes during HDraw take effect on the NEXT line; only PA/PC
+  apply mid-draw.** The reference point is line-latched. The quad experiments
+  could never detect this: their pieces continue one plane's walk, so each
+  piece's X/Y was already where the ignored write pointed, and PA/PC did all
+  the visible work. Arbitrary spans jump anchors between faces -- exactly the
+  operation the hardware lacks. No feeding scheme fixes this.
+  What survives: per-line-anchored techniques (the Mode 7 floor/ceiling
+  path, X/Y written at HBlank), and mid-line PA/PC changes along a
+  continuous walk (a single plane per scanline region).
+- **Beam-raced feeding mechanics, for whatever reuses them.** On a real GBA
   (SuperCard SD, SuperFW), `quad_affine_exact_static` holds its seams still
   -- minor static artifacts, no shimmer -- while the polled
   `quad_affine_static` shimmers. The flicker that killed the 2023-era quad
   experiments was poll-granularity jitter, not a hardware limitation:
   raster_exact_arm.S anchors Timer 0 to HBlank by DMA and lands each write
-  through a computed NOP sled, deterministic after one timer read. Next walls,
-  in order: a real display list from the renderer's spans (density, 3-4px
-  minimum spacing), the 256-tile/16KB texture cache, lighting.
+  through a computed NOP sled, deterministic after one timer read. The real
+  per-command cost is ~35 cycles (one ldmia, four IO writes, loop) -- a first
+  version at 66 made every dense line overrun by one and each VCOUNT equality
+  wait then charged a full frame, which rendered as striped bands. mGBA
+  latches one affine state per line and does not emulate HBlank DMA to the
+  timer: it can validate data, never the picture.
 - **PPU floor (Mode 7).** Proven in `floor_mode7`: one floor plane drawn
   entirely by the PPU from a pre-lit plan, per-scanline affine state via
   HBlank DMA. 23-39% of drawn texels are on horizontal faces. Integration

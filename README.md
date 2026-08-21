@@ -1258,6 +1258,23 @@ Costs 2,385 cycles a frame, about 0.2%.
 
 ## Observation log (hardware: GBA via SuperCard SD, SuperFW)
 
+Beam-raced spans, resolved 2026-08-21 (see EXPERIMENTS.md for the full arc):
+
+- **`beam_frame`**: span boundaries visible at per-line columns -- the display
+  list, atlas, IWRAM feeder and cycle-exact issue all work on silicon -- but
+  the content stayed scrambled through a timing recalibration and atlas
+  padding.
+- **`beam_xytest`**: the isolation. PA changes mid-line take effect (the
+  zoomed control half); an X/Y jump mid-line does not -- the left texture
+  continues across the seam. **The affine reference point is line-latched;
+  only PA/PC apply mid-draw.** This is why the quads "worked": pieces of one
+  plane continue the same walk, so their X/Y writes were no-ops being
+  ignored. Arbitrary per-span anchor jumps are impossible on this PPU, with
+  any feeding scheme. What survives is the per-line-anchored Mode 7
+  floor/ceiling path and PA/PC-only effects.
+
+
+
 First real-silicon observations, 2026-08-21:
 
 - **`quad_affine_exact_static_sc`: no shimmer.** Minor static artifacts, but
