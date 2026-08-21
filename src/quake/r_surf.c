@@ -219,6 +219,9 @@ static HOT void render_textured_faces(void)
          * side-plane flags cannot be trusted, and near clipping can move the
          * polygon far off screen anyway. Clip such faces against everything. */
         if (planes & 1u) planes = 31u;
+#ifdef BSP_NO_CLIP
+        planes = 0;   /* diagnostic: measure the clip path's cost */
+#endif
         if (planes) {
             COUNT(near_clipped_faces, 1);
             ClipTextureVertex polygon[CLIP_RING_MAX], scratch[CLIP_RING_MAX];

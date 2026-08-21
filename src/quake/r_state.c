@@ -11,6 +11,18 @@ extern void clear_logical_framebuffer(uint8_t *);
 extern void expand_logical_framebuffer(const uint8_t *, volatile uint16_t *);
 extern int32_t plane_distance_q8_arm(const void *, int32_t, int32_t, int32_t);
 extern void transform_vertices_arm(const void *);
+
+/* The out-of-line ARM helper exists for the Thumb-compiled targets, where a
+ * 64-bit multiply would otherwise call __aeabi_lmul. This translation unit is
+ * built -marm, where the same expression compiles to SMULL plus a shift
+ * inline, so calling it costs a branch and a return for three instructions of
+ * work. The generated code had 22 such calls. */
+static inline __attribute__((always_inline))
+int32_t multiply_q16_inline(int32_t a, int32_t b)
+{
+    return (int32_t)(((int64_t)a * b) >> 16);
+}
+#define multiply_q16(a, b) multiply_q16_inline((a), (b))
 extern void draw_texture_row_arm(const void *);
 
 /* Argument block for draw_texture_row_arm. The field order is the routine's
