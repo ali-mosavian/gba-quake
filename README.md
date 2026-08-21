@@ -741,6 +741,19 @@ on the target, and the ones that did not pay were dropped.
   746 -> 668 candidates, 1,044 -> 957 rows, 1,187 -> 1,101 spans, **-25K**.
   Marksurfaces are remapped and de-duplicated and node face ranges renumbered;
   faces on one plane share a node, so near-to-far ordering survives.
+- **Baked per-ring texture coordinates.** `s` and `t` are a function of the
+  world vertex and the face's texinfo alone, so evaluating them per frame
+  evaluates a constant: six multiplies and eight ROM axis reads per ring
+  vertex, plus lifting the ten-word axis record onto the stack once per face.
+  A stub that skipped the computation bounded the win at **93,271 cycles**;
+  the table realises **79,585** of it (2,058,929 -> 1,979,344, 8.15 -> 8.48
+  FPS), the gap being the two ROM words it reads instead. Output is
+  pixel-identical -- the extractor evaluates the same integer expression.
+  Per ring entry, not per vertex: a vertex shared by three faces has three
+  different pairs, because each face subtracts its own texture origin, so
+  there is nothing to cache at runtime. 9,554 entries, 76,432 bytes of ROM.
+  What remained of the per-face texture record was the texture index, so
+  `FaceTexture` and its stack copy went away with it.
 - **Texture downsampling to mip 1.** The originals are authored for 320x200
   against this renderer's 120x80, so level 0 is detail the screen cannot
   resolve. Costs nothing at runtime -- the texture axes are scaled by the same
@@ -766,8 +779,15 @@ Measured and reverted:
   starved the stack and the renderer ran away to 78M cycles a frame.
 
 The pattern across these: the remaining BSP indirections are per-face, and at
-120 drawn faces a frame that is already cheap. The one that mattered was per
-vertex.
+120 drawn faces a frame that is already cheap. The ones that mattered were per
+vertex -- the explicit ring, and then the coordinates on it.
+
+What is left is camera-dependent and cannot be baked: the vertex transform
+(76,344), the per-face plane test (81,814), the projection in the face front
+end, and the whole span loop. With drawing removed entirely the frame is
+**455,646** cycles against a 559,333-cycle 30 FPS budget -- 81% of it spent
+before a single pixel. Offline preparation has taken what it can reach here;
+the rest is work volume.
 
 ### Lightmaps
 

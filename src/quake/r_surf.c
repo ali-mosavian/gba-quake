@@ -1,56 +1,32 @@
 /* BSP surface texture coordinates, near clipping, projection, and submission. */
-/* The texture axes and origin live in Game Pak ROM and are identical for every
- * vertex of a face, so they are lifted onto the IWRAM stack once per face
- * rather than re-read per vertex. */
-typedef struct {
-    int32_t axis[2][4];
-    int32_t u_base_q8, v_base_q8;
-    uint16_t texture;
-} FaceTexture;
-
-static FaceTexture face_texture(const RuntimeFace *face)
+/* Texture coordinates are read, not computed.
+ *
+ * s and t are a function of the world vertex and the face's texinfo alone, so
+ * evaluating them per frame evaluates a constant -- six multiplies and eight
+ * ROM axis reads per ring vertex, measured at 93K cycles a frame at the spawn.
+ * The extractor bakes them into bsp_face_texcoords[], one pair per ring entry
+ * with the face's texture origin already subtracted. Per ring entry rather
+ * than per vertex because a vertex shared by three faces has three different
+ * pairs: each face subtracts its own origin.
+ *
+ * What is left of the per-face texture state is the texture index, so there
+ * is no longer a record to lift onto the stack. */
+static uint16_t face_texture(const RuntimeFace *face)
 {
-    const MapFace *source = &bsp_faces[face->source_face];
-    const MapTexInfo *info = &bsp_texinfo[source->texinfo];
-    FaceTexture result;
-    for (unsigned axis = 0; axis < 2; ++axis)
-        for (unsigned term = 0; term < 4; ++term)
-            result.axis[axis][term] = info->axis[axis][term];
-    result.u_base_q8 = source->u_base_q8;
-    result.v_base_q8 = source->v_base_q8;
-    result.texture = info->texture;
-    return result;
+    return bsp_texinfo[bsp_faces[face->source_face].texinfo].texture;
 }
 
-/* Quake texture coordinates are world-space: s = dot(vertex, axis) + offset.
- * The axes are Q12, so the dot product is Q12 texels and >>4 leaves Q8.
- * Subtracting the face's own origin keeps the value near zero instead of
- * several thousand texels, which is what the u/z pipeline needs to stay
- * precise. The origin is a multiple of the texture size, so wrapping is
- * unaffected. */
-static void world_texture_coordinates(MapVertex world, const FaceTexture *texture,
-                                      int32_t *u_q8, int32_t *v_q8)
+static ClipTextureVertex clip_texture_vertex(unsigned vertex, unsigned ring_index)
 {
-    *u_q8 = ((texture->axis[0][0] * world.x + texture->axis[0][1] * world.y +
-              texture->axis[0][2] * world.z + texture->axis[0][3]) >> 4)
-            - texture->u_base_q8;
-    *v_q8 = ((texture->axis[1][0] * world.x + texture->axis[1][1] * world.y +
-              texture->axis[1][2] * world.z + texture->axis[1][3]) >> 4)
-            - texture->v_base_q8;
+    CameraPoint camera = camera_cache[vertex];
+    ClipTextureVertex result = {camera.horizontal, camera.vertical, camera.depth,
+                                bsp_face_texcoords[2 * ring_index],
+                                bsp_face_texcoords[2 * ring_index + 1]};
+    return result;
 }
 
 extern void draw_textured_polygon_arm(const TextureVertex *vertices,
                                       unsigned vertex_count, uint16_t texture_index);
-
-static ClipTextureVertex clip_texture_vertex(unsigned vertex,
-                                             const FaceTexture *texture)
-{
-    CameraPoint camera = camera_cache[vertex];
-    ClipTextureVertex result = {camera.horizontal, camera.vertical, camera.depth, 0, 0};
-    world_texture_coordinates(runtime_vertices[vertex], texture,
-                              &result.u_q8, &result.v_q8);
-    return result;
-}
 
 /* Camera lookup, texture coordinates and projection for one ring vertex,
  * written straight into the output ring.
@@ -58,12 +34,12 @@ static ClipTextureVertex clip_texture_vertex(unsigned vertex,
  * Kept as one function on purpose: composing the two halves meant the 20-byte
  * intermediate went out to the stack and came straight back, and the ring had
  * to be walked twice because the near-plane test needed the depth first. */
-static void project_ring_vertex(unsigned vertex, const FaceTexture *texture,
+static void project_ring_vertex(unsigned vertex, unsigned ring_index,
                                 TextureVertex *out)
 {
     CameraPoint camera = camera_cache[vertex];
-    int32_t u_q8, v_q8;
-    world_texture_coordinates(runtime_vertices[vertex], texture, &u_q8, &v_q8);
+    int32_t u_q8 = bsp_face_texcoords[2 * ring_index];
+    int32_t v_q8 = bsp_face_texcoords[2 * ring_index + 1];
     int depth_index = maximum(1, minimum(4095, Q8_TO_INT(camera.depth + 128)));
     int32_t inverse_depth = projection_reciprocal_q16[depth_index];
     int32_t across = (int32_t)(((int64_t)camera.horizontal * inverse_depth) >> 12);
@@ -190,7 +166,7 @@ static HOT void render_textured_faces(void)
     for (unsigned accepted = 0; accepted < accepted_face_count; ++accepted) {
         const RuntimeFace *face = &runtime_faces[frame_faces[accepted]];
         if (face->edge_count < 3) continue;
-        FaceTexture face_texture_info = face_texture(face);
+        uint16_t texture = face_texture(face);
         unsigned count = minimum(face->edge_count, CLIP_RING_MAX - 8);
         /* Resolve the vertex ring once. surfedge -> edge -> vertex is three
          * dependent loads across ROM and EWRAM, and the ring is walked twice
@@ -199,7 +175,8 @@ static HOT void render_textured_faces(void)
         unsigned planes = 0;
         TextureVertex projected[CLIP_RING_MAX];
         for (unsigned i = 0; i < count; ++i) {
-            unsigned vertex = bsp_face_vertices[face->first_vertex + i];
+            unsigned ring_index = (unsigned)face->first_vertex + i;
+            unsigned vertex = bsp_face_vertices[ring_index];
             ring[i] = (uint16_t)vertex;
             /* Note which clip planes this face crosses. The near plane is
              * needed for coverage; the four sides are needed for precision,
@@ -209,7 +186,7 @@ static HOT void render_textured_faces(void)
             /* Projected unconditionally; faces that turn out to need clipping
              * redo it below, and that is cheaper than walking the ring twice
              * for the ones that do not. */
-            project_ring_vertex(vertex, &face_texture_info, &projected[i]);
+            project_ring_vertex(vertex, ring_index, &projected[i]);
             if (projected[i].xq8 > Q8_FROM_INT(SCREEN_WIDTH)) planes |= 2u;
             if (projected[i].xq8 < 0) planes |= 4u;
             if (projected[i].yq8 > Q8_FROM_INT(SCREEN_HEIGHT)) planes |= 8u;
@@ -226,7 +203,8 @@ static HOT void render_textured_faces(void)
             COUNT(near_clipped_faces, 1);
             ClipTextureVertex polygon[CLIP_RING_MAX], scratch[CLIP_RING_MAX];
             for (unsigned i = 0; i < count; ++i)
-                polygon[i] = clip_texture_vertex(ring[i], &face_texture_info);
+                polygon[i] = clip_texture_vertex(
+                    ring[i], (unsigned)face->first_vertex + i);
             count = clip_texture_polygon(polygon, count, scratch, planes);
             if (count < 3) continue;
             for (unsigned i = 0; i < count; ++i)
@@ -236,7 +214,6 @@ static HOT void render_textured_faces(void)
         degenerate_face_count += (uint16_t)(projected[0].x + projected[0].u_over_depth);
         continue;
 #endif
-        uint16_t texture = face_texture_info.texture;
 #if defined(BSP_TEXTURED_SOLID) || defined(BSP_TEXTURED_NO_COVERAGE) || \
     defined(BSP_TEXTURED_C_REFERENCE)
         draw_textured_polygon_reference(projected, count, texture,

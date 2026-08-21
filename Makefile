@@ -119,7 +119,7 @@ $(BUILD)/bsp_textured_nofetch.o: src/quake/r_unity.c src/quake/r_state.c src/qua
 	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_TEXTURED_NO_FETCH=1 -c $< -o $@
 
 $(BUILD)/bsp_textured_nolight.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
-	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_AUTO_WALK=1 -DBSP_PROFILE_COUNTS=1 -DBSP_TEXTURED_NO_LIGHT=1 -c $< -o $@
+	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_TEXTURED_NO_LIGHT=1 -c $< -o $@
 
 $(BUILD)/bsp_textured_cref.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_PROFILE_COUNTS=1 -c $< -o $@

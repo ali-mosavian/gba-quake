@@ -332,6 +332,7 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
         return bsp_lightmap.add_border(bsp_lightmap.resample(block, lmscale))
 
     face_vertex_ring = []
+    face_vertex_texcoords = []
     face_values = []
     for face_index, (plane, side, first, count, texture_info, *_) in enumerate(faces):
         ring = rings[face_index]
@@ -349,6 +350,8 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
         v_base = ((min(v for _, v in uv) >> 8) // height) * height
         ring_start = len(face_vertex_ring)
         face_vertex_ring.extend(ring)
+        face_vertex_texcoords.extend(
+            (u - (u_base << 8), v - (v_base << 8)) for u, v in uv)
         face_values.append(f"{{{plane}, {side}, {first}, {len(ring)}, {texture_info}, {round(center[0])}, "
                            f"{round(center[1])}, {round(center[2])}, {math.ceil(radius)}, "
                            f"{u_base << 8}, {v_base << 8}, {ring_start}}}")
@@ -421,6 +424,18 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
                 " __attribute__((aligned(4)))", [str(x) for x in shade], 24)
     emit(lines, "static const uint16_t bsp_face_vertices[]",
          [str(v) for v in face_vertex_ring], 16)
+    # Texture coordinates per ring entry, not per vertex.
+    #
+    # s and t are a function of the world vertex and the face's texinfo alone,
+    # so recomputing them every frame recomputes a constant -- six multiplies
+    # and eight axis reads per ring vertex, measured at 93K cycles a frame.
+    # They cannot be cached per vertex at runtime: a vertex shared by three
+    # faces has three different pairs, because each face subtracts its own
+    # texture origin. Per ring entry is the granularity that makes them
+    # constant. Emitted with that origin already subtracted, exactly as
+    # world_texture_coordinates left them.
+    emit(lines, "static const int32_t bsp_face_texcoords[]",
+         [str(value) for pair in face_vertex_texcoords for value in pair], 12)
     # Axes scaled by the mip factor so u and v come out in the stored level's
     # texel units; nothing downstream needs to know the level.
     axis_scale = 4096.0 / (1 << mip)
