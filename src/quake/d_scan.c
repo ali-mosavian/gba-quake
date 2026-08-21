@@ -405,53 +405,93 @@ static unsigned polygon_crossings(TextureEdgeWalker *walkers,
 /* Nothing in front of this run, so no per-pixel coverage test is needed: one
  * mask OR at the end records the whole run.
  *
- * The run itself dispatches once into fully unrolled code rather than looping.
+ * The run dispatches once into fully unrolled code rather than looping.
  * Segments here average about six pixels, so a counted loop spends much of its
- * time on the counter and the branch instead of on texels. Falling through a
- * single body keeps one copy of the logic for every length. */
+ * time on the counter and the branch instead of on texels.
+ *
+ * The profile builds use a sixteen-deep Duff's device instead. Their counter
+ * code adds about 3KB to IWRAM, and with the affine row loop's second set of
+ * dispatch bodies that pushed code and .bss into the stack: the walk build
+ * crashed at boot. The Duff form costs +0.9% to +4.0% depending on pose --
+ * the rounds counter stays live across the whole body -- which is why the
+ * ordinary builds do not use it; a profile build's cycle numbers already
+ * carry the counters' own 157K, so its dispatch differing slightly costs the
+ * methodology nothing. The counters themselves count identically. */
+#ifdef BSP_PROFILE_COUNTS
+#define DRAW_RUN(WRITE, FETCH, SHIFT)                                          \
+                if (!blocked) {                                                \
+                    COUNT(span_clear_count, 1);                                \
+                    COUNT(texel_sample_count, (uint32_t)segment_pixels + 1);   \
+                    uint8_t *destination = row + span;                         \
+                    unsigned n = (unsigned)segment_pixels + 1;                 \
+                    unsigned rounds = (n + 15) >> 4;                           \
+                    switch (n & 15) {                                          \
+                    case  0: do { WRITE(); __attribute__((fallthrough));       \
+                    case 15: WRITE(); __attribute__((fallthrough));                        \
+                    case 14: WRITE(); __attribute__((fallthrough));                        \
+                    case 13: WRITE(); __attribute__((fallthrough));                        \
+                    case 12: WRITE(); __attribute__((fallthrough));                        \
+                    case 11: WRITE(); __attribute__((fallthrough));                        \
+                    case 10: WRITE(); __attribute__((fallthrough));                        \
+                    case  9: WRITE(); __attribute__((fallthrough));                        \
+                    case  8: WRITE(); __attribute__((fallthrough));                        \
+                    case  7: WRITE(); __attribute__((fallthrough));                        \
+                    case  6: WRITE(); __attribute__((fallthrough));                        \
+                    case  5: WRITE(); __attribute__((fallthrough));                        \
+                    case  4: WRITE(); __attribute__((fallthrough));                        \
+                    case  3: WRITE(); __attribute__((fallthrough));                        \
+                    case  2: WRITE(); __attribute__((fallthrough));                        \
+                    case  1: WRITE();                        \
+                             } while (--rounds);                               \
+                    }                                                          \
+                    RECORD_CLEAR_RUN();                                        \
+                }                                                              \
+                MIXED_RUN(FETCH, SHIFT)
+#else
 #define DRAW_RUN(WRITE, FETCH, SHIFT)                                          \
                 if (!blocked) {                                                \
                     COUNT(span_clear_count, 1);                                \
                     COUNT(texel_sample_count, (uint32_t)segment_pixels + 1);   \
                     uint8_t *destination = row + span;                         \
                     switch ((unsigned)segment_pixels + 1) {                    \
-                    case 32: WRITE(); __attribute__((fallthrough));                             \
-                    case 31: WRITE(); __attribute__((fallthrough));                             \
-                    case 30: WRITE(); __attribute__((fallthrough));                             \
-                    case 29: WRITE(); __attribute__((fallthrough));                             \
-                    case 28: WRITE(); __attribute__((fallthrough));                             \
-                    case 27: WRITE(); __attribute__((fallthrough));                             \
-                    case 26: WRITE(); __attribute__((fallthrough));                             \
-                    case 25: WRITE(); __attribute__((fallthrough));                             \
-                    case 24: WRITE(); __attribute__((fallthrough));                             \
-                    case 23: WRITE(); __attribute__((fallthrough));                             \
-                    case 22: WRITE(); __attribute__((fallthrough));                             \
-                    case 21: WRITE(); __attribute__((fallthrough));                             \
-                    case 20: WRITE(); __attribute__((fallthrough));                             \
-                    case 19: WRITE(); __attribute__((fallthrough));                             \
-                    case 18: WRITE(); __attribute__((fallthrough));                             \
-                    case 17: WRITE(); __attribute__((fallthrough));                             \
-                    case 16: WRITE(); __attribute__((fallthrough));                             \
-                    case 15: WRITE(); __attribute__((fallthrough));                             \
-                    case 14: WRITE(); __attribute__((fallthrough));                             \
-                    case 13: WRITE(); __attribute__((fallthrough));                             \
-                    case 12: WRITE(); __attribute__((fallthrough));                             \
-                    case 11: WRITE(); __attribute__((fallthrough));                             \
-                    case 10: WRITE(); __attribute__((fallthrough));                             \
-                    case  9: WRITE(); __attribute__((fallthrough));                             \
-                    case  8: WRITE(); __attribute__((fallthrough));                             \
-                    case  7: WRITE(); __attribute__((fallthrough));                             \
-                    case  6: WRITE(); __attribute__((fallthrough));                             \
-                    case  5: WRITE(); __attribute__((fallthrough));                             \
-                    case  4: WRITE(); __attribute__((fallthrough));                             \
-                    case  3: WRITE(); __attribute__((fallthrough));                             \
-                    case  2: WRITE(); __attribute__((fallthrough));                             \
-                    case  1: WRITE(); break;                             \
+                    case 32: WRITE(); __attribute__((fallthrough));                        \
+                    case 31: WRITE(); __attribute__((fallthrough));                        \
+                    case 30: WRITE(); __attribute__((fallthrough));                        \
+                    case 29: WRITE(); __attribute__((fallthrough));                        \
+                    case 28: WRITE(); __attribute__((fallthrough));                        \
+                    case 27: WRITE(); __attribute__((fallthrough));                        \
+                    case 26: WRITE(); __attribute__((fallthrough));                        \
+                    case 25: WRITE(); __attribute__((fallthrough));                        \
+                    case 24: WRITE(); __attribute__((fallthrough));                        \
+                    case 23: WRITE(); __attribute__((fallthrough));                        \
+                    case 22: WRITE(); __attribute__((fallthrough));                        \
+                    case 21: WRITE(); __attribute__((fallthrough));                        \
+                    case 20: WRITE(); __attribute__((fallthrough));                        \
+                    case 19: WRITE(); __attribute__((fallthrough));                        \
+                    case 18: WRITE(); __attribute__((fallthrough));                        \
+                    case 17: WRITE(); __attribute__((fallthrough));                        \
+                    case 16: WRITE(); __attribute__((fallthrough));                        \
+                    case 15: WRITE(); __attribute__((fallthrough));                        \
+                    case 14: WRITE(); __attribute__((fallthrough));                        \
+                    case 13: WRITE(); __attribute__((fallthrough));                        \
+                    case 12: WRITE(); __attribute__((fallthrough));                        \
+                    case 11: WRITE(); __attribute__((fallthrough));                        \
+                    case 10: WRITE(); __attribute__((fallthrough));                        \
+                    case  9: WRITE(); __attribute__((fallthrough));                        \
+                    case  8: WRITE(); __attribute__((fallthrough));                        \
+                    case  7: WRITE(); __attribute__((fallthrough));                        \
+                    case  6: WRITE(); __attribute__((fallthrough));                        \
+                    case  5: WRITE(); __attribute__((fallthrough));                        \
+                    case  4: WRITE(); __attribute__((fallthrough));                        \
+                    case  3: WRITE(); __attribute__((fallthrough));                        \
+                    case  2: WRITE(); __attribute__((fallthrough));                        \
+                    case  1: WRITE(); break;                        \
                     default: break;                                            \
                     }                                                          \
                     RECORD_CLEAR_RUN();                                        \
                 }                                                              \
                 MIXED_RUN(FETCH, SHIFT)
+#endif
 static __attribute__((used, noinline, section(REFERENCE_POLYGON_SECTION)))
 void draw_textured_polygon_reference(
                                       const TextureVertex *vertices,

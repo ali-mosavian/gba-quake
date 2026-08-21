@@ -57,6 +57,7 @@ libgcc call.
 | Sharing the segment-finish code as an 18-param always_inline function | **+2.8% to +3.5%** structural; the perspective path's values went through the stack. A textual `#include` is free |
 | Gating affine faces by bbox area (256 px^2) | **+1.5%** at most poses; small faces profit too -- the bit-ladder divides are cheap on small quotients |
 | `BSP_AFFINE_DIVISOR=4` | 2.1% faster on average, stills clean, but admits 25% depth change across a face -- the swimming regime. A knob, not the default |
+| Sixteen-deep Duff's device for the run dispatch | **+0.9% to +4.0%** -- the rounds counter stays live across the body. Profile builds use it anyway: their counters add ~3KB of IWRAM and the full unroll pushed code+bss into the stack, crashing them at boot |
 | Four texels packed into one word store | -3.6K, then +30K once aligned |
 | Analytic surface gradients (Quake's `d_sdivzstepu`) | +23K, plus 11K of newly-drawn degenerates |
 | Shared `(base, coord, step, mask)` tuple for both specialised cases | +4% oblique: the *general* path spilled its masks and reloaded them per pixel |
@@ -133,7 +134,11 @@ spawn and ~+31% at two other yaws, ~2,900 cycles per extra accepted face.
   mounts both directories and forwards every `BSP_*` variable, or the
   container's `make` stamps different settings and invalidates a good header.
 - **Profile counters cost ~157K a frame**, a quarter of the 30 FPS budget, so
-  they are opt-in. `BSP_PROFILE_SPAN_SHAPE` is separate from
+  they are opt-in. They also cost ~3KB of IWRAM code, which is why profile
+  builds use the Duff dispatch: with the full unroll they overflow the stack
+  and crash at boot -- all counters read zero and the frame reads 1 cycle.
+  The shape build runs with ~600B of stack margin; treat new IWRAM growth
+  with suspicion. `BSP_PROFILE_SPAN_SHAPE` is separate from
   `BSP_PROFILE_COUNTS` because its test costs two multiplies a span.
 - **Verify pixel-exactness before trusting a speedup.** Every kept change above
   that should be bit-exact was diffed against the previous frame.
