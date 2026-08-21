@@ -37,6 +37,13 @@
 #define REG_TM0CNT   GBA_REG16(0x04000102)
 #define REG_TM1D     GBA_REG16(0x04000104)
 #define REG_TM1CNT   GBA_REG16(0x04000106)
+/* Timer 3 is left free-running as a wall clock for the physics step. Timers 0
+ * and 1 are the profiler's and are reset every frame, so they cannot measure
+ * a whole frame including the VBlank wait. */
+#define REG_TM3D     GBA_REG16(0x0400010c)
+#define REG_TM3CNT   GBA_REG16(0x0400010e)
+#define TIMER_ENABLE 0x0080
+#define TIMER_DIV1024 0x0003
 
 #define BG_PALETTE ((volatile uint16_t *)0x05000000)
 #define BG_TILES   ((volatile uint16_t *)0x06000000)

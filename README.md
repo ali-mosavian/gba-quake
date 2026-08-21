@@ -783,9 +783,16 @@ origin-height above the real surface.
 Everything is Q8 world units. Positions share the camera's existing
 coordinates; velocities are Q8 units per second and integrate at a fixed 64 Hz
 substep, which makes the per-step position delta a shift rather than a divide
-and keeps movement independent of the frame rate. The substep count comes from
-the renderer's own measured cycles -- one step per 262144 cycles is 64 Hz on a
-16.78 MHz clock -- clamped to 8 so a slow frame cannot spiral.
+and keeps movement independent of the frame rate. Turning is on the same clock,
+so the view sweeps at one rate whatever the view costs.
+
+The substep count comes from a free-running timer 3 at 16384 Hz, read at the
+same point every frame, with the leftover ticks carried rather than truncated.
+Driving it from the renderer's own cycle count instead was measurably wrong:
+that number excludes the VBlank wait, and with truncation on top the clock ran
+at 40 Hz rather than 64. Timers 0 and 1 cannot be used for this -- the profiler
+resets them every frame. The count is clamped to 8 so a slow frame cannot
+spiral.
 
 Two details differ from Quake and are deliberate:
 

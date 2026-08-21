@@ -172,6 +172,8 @@ typedef struct {
     int32_t player_contents;
     uint32_t player_solid_frames;
     uint32_t steps_climbed;
+    uint32_t total_substeps;
+    int32_t player_yaw_q8;
 } BspProfile;
 EWRAM volatile BspProfile bsp_profile;
 

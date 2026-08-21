@@ -24,6 +24,12 @@ enum {
     STOP_SPEED_Q8 = Q8_FROM_INT(20),
     FRICTION_STEP = (4 * 256) / PHYSICS_HZ,  /* Q8 fraction shed per step */
     JUMP_SPEED_Q8 = Q8_FROM_INT(270),
+    /* 140 degrees a second, Quake's default yawspeed, as Q8 of a
+     * 256-unit turn per 64 Hz substep. */
+    TURN_RATE_Q8 = 400,
+    /* Timer 3 runs at 16.78 MHz / 1024 = 16384 Hz, so a 64 Hz substep is
+     * exactly 256 ticks and the remainder can be carried in the low bits. */
+    TIMER_TICKS_PER_STEP = 16384 / PHYSICS_HZ,
     /* cos of the steepest slope still counted as floor, Q14 */
     FLOOR_NORMAL_Q14 = (int)(0.7 * 16384),
     TRACE_ONE = 1 << 16,                     /* Q16 fraction of a whole move */
@@ -291,9 +297,16 @@ static int32_t approximate_length(int32_t x, int32_t y)
 typedef struct {
     Vector position;
     Vector velocity;
-    uint8_t yaw;
+    /* Q8 so the turn rate can be tied to the fixed physics substep instead of
+     * the frame rate; the renderer only ever needs the whole-unit angle. */
+    int32_t yaw_q8;
     uint8_t on_ground;
 } Player;
+
+static uint8_t player_yaw(const Player *player)
+{
+    return (uint8_t)(player->yaw_q8 >> 8);
+}
 
 /* One 64 Hz substep: friction, acceleration, gravity, then the move. */
 static __attribute__((unused)) void player_step(Player *player, int32_t wish_x, int32_t wish_y, int jump)

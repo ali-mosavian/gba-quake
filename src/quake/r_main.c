@@ -3,6 +3,7 @@
 static __attribute__((unused)) uint32_t last_substeps;
 /* Invariant check: the player origin must never be inside solid. */
 static uint32_t solid_frames;
+static uint32_t total_substeps;
 static int32_t player_contents_now;
 static uint16_t read_keys(void) { return (uint16_t)(~REG_KEYINPUT) & 0x03ff; }
 
@@ -14,20 +15,38 @@ static uint16_t read_keys(void) { return (uint16_t)(~REG_KEYINPUT) & 0x03ff; }
 static void update_player(Player *player, uint16_t keys, uint16_t pressed,
                           uint32_t frame_cycles)
 {
-    if (keys & KEY_LEFT) player->yaw -= 2;
-    if (keys & KEY_RIGHT) player->yaw += 2;
+    /* Real elapsed time, from a free-running timer read at the same point
+     * every frame, so it includes the VBlank wait. The renderer's own cycle
+     * count misses that wait entirely and ran the clock about a third slow.
+     * The leftover ticks are carried rather than truncated away. */
+    static uint16_t last_tick;
+    static uint32_t tick_remainder;
+    uint16_t now = REG_TM3D;
+    tick_remainder += (uint16_t)(now - last_tick);   /* 16-bit wrap is fine */
+    last_tick = now;
+    unsigned substeps = tick_remainder / TIMER_TICKS_PER_STEP;
+    tick_remainder -= substeps * TIMER_TICKS_PER_STEP;
+    if (substeps > 8) {                  /* never spiral after a slow frame */
+        substeps = 8;
+        tick_remainder = 0;
+    }
+    (void)frame_cycles;
+    last_substeps = substeps;
+    total_substeps += substeps;
+
+    /* Turning is on the same clock as everything else, so the view sweeps at
+     * one rate whether a frame took 4 substeps or 8. */
+    int turn = (keys & KEY_RIGHT ? 1 : 0) - (keys & KEY_LEFT ? 1 : 0);
+    player->yaw_q8 += turn * TURN_RATE_Q8 * (int)substeps;
 
     int forward = (keys & KEY_UP ? 1 : 0) - (keys & KEY_DOWN ? 1 : 0);
     int strafe = (keys & KEY_B ? 1 : 0) - (keys & KEY_A ? 1 : 0);
-    int sine = sine_q14[player->yaw];
-    int cosine = sine_q14[(uint8_t)(player->yaw + 64)];
+    uint8_t yaw = player_yaw(player);
+    int sine = sine_q14[yaw];
+    int cosine = sine_q14[(uint8_t)(yaw + 64)];
     int32_t wish_x = forward * cosine - strafe * sine;
     int32_t wish_y = forward * sine + strafe * cosine;
 
-    unsigned substeps = frame_cycles >> 18;
-    if (substeps < 1) substeps = 1;
-    if (substeps > 8) substeps = 8;      /* never spiral after a slow frame */
-    last_substeps = substeps;
     for (unsigned step = 0; step < substeps; ++step)
         player_step(player, wish_x, wish_y, (pressed & KEY_R) != 0);
 }
@@ -47,17 +66,20 @@ int main(void)
     player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
     player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
     player.velocity.x = player.velocity.y = player.velocity.z = 0;
-    player.yaw = BSP_SPAWN_YAW;
+    player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW);
     player.on_ground = 0;
     int32_t camera_x = player.position.x;
     int32_t camera_y = player.position.y;
     int32_t camera_z = player.position.z + EYE_HEIGHT_Q8;
-    uint8_t yaw = player.yaw;
+    uint8_t yaw = player_yaw(&player);
     unsigned visible_page = 0;
     uint16_t previous_keys = 0;
     for (unsigned i = 0; i < BSP_VERTEX_COUNT; ++i) runtime_vertices[i] = bsp_vertices[i];
     for (unsigned i = 0; i < BSP_EDGE_COUNT; ++i) runtime_edges[i] = bsp_edges[i];
     REG_WAITCNT = WAITCNT_FAST_ROM;
+    REG_TM3CNT = 0;
+    REG_TM3D = 0;
+    REG_TM3CNT = TIMER_ENABLE | TIMER_DIV1024;
     REG_MEMCTRL = MEMCTRL_FAST_EWRAM;
     REG_DISPCNT = 0;
     BG_PALETTE[0] = 0;
@@ -87,7 +109,7 @@ int main(void)
             camera_x = player.position.x;
             camera_y = player.position.y;
             camera_z = player.position.z + EYE_HEIGHT_Q8;
-            yaw = player.yaw;
+            yaw = player_yaw(&player);
         }
 #endif
         uint16_t keys = read_keys(), pressed = keys & (uint16_t)~previous_keys;
@@ -98,7 +120,7 @@ int main(void)
             player.position.y = Q8_FROM_INT(BSP_SPAWN_Y);
             player.position.z = Q8_FROM_INT(BSP_SPAWN_Z);
             player.velocity.x = player.velocity.y = player.velocity.z = 0;
-            player.yaw = BSP_SPAWN_YAW;
+            player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW);
             cached_camera_leaf = INVALID_LEAF;
         } else {
             update_player(&player, keys, pressed, bsp_profile.total_cycles);
@@ -106,7 +128,7 @@ int main(void)
         camera_x = player.position.x;
         camera_y = player.position.y;
         camera_z = player.position.z + EYE_HEIGHT_Q8;
-        yaw = player.yaw;
+        yaw = player_yaw(&player);
 #else
         (void)pressed;
 #endif
@@ -168,9 +190,10 @@ int main(void)
 #ifdef CAMERA_INPUT
             player.position.x, player.position.y, player.position.z,
             player.velocity.z, player.on_ground, last_substeps,
-            player_contents_now, solid_frames, steps_climbed
+            player_contents_now, solid_frames, steps_climbed,
+            total_substeps, player.yaw_q8
 #else
-            0, 0, 0, 0, 0, 0, 0, 0, 0
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 #endif
         };
 
