@@ -1256,6 +1256,18 @@ Costs 2,385 cycles a frame, about 0.2%.
    128-cycle deadlines. The timer timestamps distinguish lateness from PPU latency.
 5. WIN0 clipping does not perturb the register-update behavior.
 
+## Observation log (hardware: GBA via SuperCard SD, SuperFW)
+
+First real-silicon observations, 2026-08-21:
+
+- **`quad_affine_exact_static_sc`: no shimmer.** Minor static artifacts, but
+  the piece seams hold still. The cycle-exact feeder (HBlank-DMA-anchored
+  timer, NOP-sled write scheduling) is stable on hardware.
+- **`quad_affine_static`: shimmers somewhat.** The polled feeder's seam
+  jitter reproduces on hardware where this mGBA build shows neither.
+- Together these overturn the 2023 verdict against mid-scanline affine
+  updates: the instability was poll granularity, not the display pipeline.
+
 ## Observation log (mGBA 0.10.5)
 
 | Test | mGBA observation | Measured offset/timing | Hardware status |

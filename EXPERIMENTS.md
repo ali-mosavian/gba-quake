@@ -106,6 +106,15 @@ spawn and ~+31% at two other yaws, ~2,900 cycles per extra accepted face.
 
 ## Open leads
 
+- **Beam-raced PPU spans: timing PROVEN ON HARDWARE.** On a real GBA
+  (SuperCard SD, SuperFW), `quad_affine_exact_static` holds its seams still
+  -- minor static artifacts, no shimmer -- while the polled
+  `quad_affine_static` shimmers. The flicker that killed the 2023-era quad
+  experiments was poll-granularity jitter, not a hardware limitation:
+  raster_exact_arm.S anchors Timer 0 to HBlank by DMA and lands each write
+  through a computed NOP sled, deterministic after one timer read. Next walls,
+  in order: a real display list from the renderer's spans (density, 3-4px
+  minimum spacing), the 256-tile/16KB texture cache, lighting.
 - **PPU floor (Mode 7).** Proven in `floor_mode7`: one floor plane drawn
   entirely by the PPU from a pre-lit plan, per-scanline affine state via
   HBlank DMA. 23-39% of drawn texels are on horizontal faces. Integration
@@ -132,6 +141,11 @@ spawn and ~+31% at two other yaws, ~2,900 cycles per extra accepted face.
 
 ## Measurement traps
 
+- **SuperCard SDRAM cannot serve fast ROM wait states.** WAITCNT = 0x4317 as
+  the renderer's first act means the next instruction fetch misreads and the
+  machine white-screens before drawing anything. The `_sc` targets never
+  leave the BIOS default; cost measured at +1.0% (hot code is IWRAM, textures
+  EWRAM).
 - **Never compare two builds through the scripted walk.** They run at different
   speeds, so at any wall-clock second their cameras are somewhere else. This
   invalidated two measurements before `BSP_YAW_OFFSET_Q8` existed; use fixed
