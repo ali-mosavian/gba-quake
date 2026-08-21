@@ -87,11 +87,11 @@ static int32_t divide_s64_s32(int64_t numerator, int32_t denominator)
 /* value / intervals for the short runs between perspective corrections. */
 static int divide_short_span(int value, unsigned intervals)
 {
-    static const uint16_t reciprocal_q16_small[32] = {
+    static const uint16_t reciprocal_q16_small[33] = {
         0, 65535, 32768, 21845, 16384, 13107, 10923, 9362,
         8192, 7282, 6554, 5958, 5461, 5041, 4681, 4369,
         4096, 3855, 3641, 3449, 3277, 3121, 2979, 2849,
-        2731, 2621, 2521, 2427, 2341, 2260, 2185, 2114
+        2731, 2621, 2521, 2427, 2341, 2260, 2185, 2114, 2048
     };
     if (!intervals) return 0;
     if (intervals == 1) return value;
@@ -521,6 +521,19 @@ void draw_textured_polygon_reference(
             /* Segments stop at the next 32-pixel boundary, so a segment never
              * straddles two coverage words and is never longer than the 32-pixel
              * perspective interval. */
+            /* The far correction of one segment is the near correction of the
+             * next. Each segment fits its affine line across advance =
+             * pixels + 1 intervals -- from its first pixel to the next
+             * segment's first pixel -- so consecutive segments share a
+             * correction point exactly and the carried pair replaces two of
+             * the four reciprocal multiplies. A hidden segment breaks the
+             * chain. Fitting one pixel past the drawn end instead of on it
+             * changes the interval from at most 32 to at most 33, which is
+             * noise against the measured 2.72-texel error of the interval
+             * itself, and it makes u and v continuous across the boundary
+             * where before each segment re-fitted its own line. */
+            int carry_valid = 0;
+            int u_carry = 0, v_carry = 0;
             for (int span = left; span <= right; ) {
                 int end = minimum(right, span | span_mask_bits);
                 COUNT(drawn_span_count, 1);
@@ -545,6 +558,7 @@ void draw_textured_polygon_reference(
                     inv0 += plane.inverse_depth_dx * (segment_pixels + 1);
                     uoz0 += plane.u_over_depth_dx * (segment_pixels + 1);
                     voz0 += plane.v_over_depth_dx * (segment_pixels + 1);
+                    carry_valid = 0;
                     span = end + 1;
                     continue;
                 }
@@ -563,15 +577,20 @@ void draw_textured_polygon_reference(
                  * exact reference and 38.9 at worst -- visible as the texture
                  * swimming as the camera turns. Fitting across both ends brings
                  * it to 2.72, and halving the interval to 16 pixels to 0.86. */
-                int32_t inv1 = inv0 + plane.inverse_depth_dx * segment_pixels;
-                int32_t uoz1 = uoz0 + plane.u_over_depth_dx * segment_pixels;
-                int32_t voz1 = voz0 + plane.v_over_depth_dx * segment_pixels;
-                int u = texel_from_planes(uoz0, inv0);
-                int v = texel_from_planes(voz0, inv0);
+                int advance = segment_pixels + 1;
+                int32_t inv1 = inv0 + plane.inverse_depth_dx * advance;
+                int32_t uoz1 = uoz0 + plane.u_over_depth_dx * advance;
+                int32_t voz1 = voz0 + plane.v_over_depth_dx * advance;
+                int u = carry_valid ? u_carry : texel_from_planes(uoz0, inv0);
+                int v = carry_valid ? v_carry : texel_from_planes(voz0, inv0);
                 int u1 = texel_from_planes(uoz1, inv1);
                 int v1 = texel_from_planes(voz1, inv1);
-                int du = divide_short_span(u1 - u, (unsigned)segment_pixels);
-                int dv = divide_short_span(v1 - v, (unsigned)segment_pixels);
+                /* Saved before the bias and wrap below modify u and v. */
+                u_carry = u1;
+                v_carry = v1;
+                carry_valid = 1;
+                int du = divide_short_span(u1 - u, (unsigned)advance);
+                int dv = divide_short_span(v1 - v, (unsigned)advance);
 
 #if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH) && \
         !defined(BSP_TEXTURED_NO_LIGHT)
@@ -851,10 +870,9 @@ void draw_textured_polygon_reference(
 #undef TEXEL
 #undef SHIFT_ONE
 #undef WRITE_ONE
-                int advance = segment_pixels + 1;
-                inv0 += plane.inverse_depth_dx * advance;
-                uoz0 += plane.u_over_depth_dx * advance;
-                voz0 += plane.v_over_depth_dx * advance;
+                inv0 = inv1;
+                uoz0 = uoz1;
+                voz0 = voz1;
                 span = end + 1;
             }
 #endif

@@ -876,6 +876,24 @@ oblique -- less than the test each additional case would charge every span.
 Weakening the condition from `dv == 0` to "crosses no boundary across the run"
 was also measured, and moved the oblique pose from 120 texels to 143.
 
+### Carrying the perspective correction across segments
+
+Each drawing segment used to correct perspective at both of its own ends --
+four reciprocal multiplies -- although its far end is one pixel short of the
+next segment's start. Fitting the affine line across `pixels + 1` intervals
+instead, from a segment's first pixel to the *next* segment's first pixel,
+makes consecutive segments share a correction point exactly: the carried pair
+replaces two of the four multiplies, and the tail's three accumulator advances
+collapse into the endpoint values already computed. A hidden segment breaks
+the chain.
+
+**-1.25% to -3.82% across the six fixed yaws**, best at the oblique poses
+where the span specialisation costs -- the two changes are complementary.
+Output is not bit-identical (the fit interval is 33 pixels at most instead of
+32) but differs only by sub-texel shifts: 9% of pixels change, four of 38,400
+by more than 48/255. Segment boundaries are now C0-continuous in u and v,
+where before each segment re-fitted its own line.
+
 ### Filling non-convex polygons
 
 The row sweep collects every edge crossing on the row, sorts them, and fills

@@ -5,7 +5,7 @@ cycles per frame at the dm1 spawn unless noted, measured with
 `scripts/profile.py` against mGBA 0.10.5. The README carries the reasoning;
 this file is the index.
 
-Current: **1,816,372 cycles, 9.24 FPS**. 30 FPS is 559,333.
+Current: **1,793,672 cycles, 9.35 FPS**. 30 FPS is 559,333.
 
 ## Kept
 
@@ -20,6 +20,7 @@ Current: **1,816,372 cycles, 9.24 FPS**. 30 FPS is 559,333.
 | Baked per-ring texture coordinates | **-79.6K** (ceiling 93.3K) |
 | Non-convex coplanar merge + even-odd crossings fill | **-105.8K** net |
 | Single-axis span specialisation | **-0.88%** avg; -3.1% spawn, +2.2% worst |
+| Segment endpoint carry (fit across `pixels + 1`) | **-1.25% to -3.82%** at all six yaws |
 | Lightmaps, pre-baked, one shade row per segment | **+93K** (a feature, not a win) |
 | Texture mip 1 | memory only: 176KB -> 44KB, no frame cost |
 | Framebuffer in IWRAM | byte and word stores both 1 cycle |
