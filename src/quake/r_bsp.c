@@ -137,7 +137,13 @@ static inline __attribute__((always_inline)) int face_is_in_view(
     int32_t depth = (cosine * dx + sine * dy) >> 14;
     int32_t horizontal = absolute((cosine * dy - sine * dx) >> 14);
     int32_t vertical = absolute(face->center_z - camera_z);
-    int radius = face->radius;
+    /* BSP_RADIUS_SCALE prices the one cost of bundling disjoint coplanar faces
+     * into a single multi-ring face: the bundle's bounding sphere is the union
+     * of its parts', so culling loosens. Scaling the radius here and nowhere
+     * else changes which faces are accepted without changing what is drawn --
+     * a face accepted and then found to be off screen is clipped away -- so
+     * the delta is exactly the front-end work a looser sphere would add. */
+    int radius = face->radius * BSP_RADIUS_SCALE;
     if (depth + radius < 8) return 0;
     if (horizontal > radius && (horizontal - radius) * FOCAL_LENGTH > depth * 60) return 0;
     if (vertical > radius && (vertical - radius) * FOCAL_LENGTH > depth * 40) return 0;

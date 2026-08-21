@@ -1008,6 +1008,55 @@ is no way to check a lightmap by reading the numbers: an origin one luxel out,
 a block one column too wide, a colour snapped to the wrong ramp -- all of them
 produce plausible bytes.
 
+### Bundling disjoint coplanar faces: priced and rejected
+
+The crossings fill does not need a face's rings to be connected -- several
+disjoint rings on one plane fill correctly as one polygon by even-odd parity,
+sharing one plane fit, one edge-walker build and one row sweep. After merging,
+dm1's 1,409 faces sit in only **600** coplanar/texinfo groups, so the ceiling
+looked like another 35% of the original faces absorbed.
+
+It loses, and the reason is the bounding sphere. A bundle's sphere is the union
+of its parts', so culling loosens for every frame, while the setup saving only
+applies to the faces actually drawn.
+
+**The cost, measured.** `BSP_RADIUS_SCALE` multiplies the culling radius and
+nothing else, so what is drawn is identical -- a face accepted and then found
+off screen is clipped away -- and the delta is exactly the front-end work a
+looser sphere adds:
+
+| yaw | x1 | x2 | x4 | x8 |
+|---|---|---|---|---|
+| +0° | — | +3.2% | +8.4% | +13.3% |
+| +90° | — | +13.8% | +30.9% | +42.8% |
+| +150° | — | +12.3% | +30.7% | +41.3% |
+
+At +90° that is 41 accepted faces becoming 157 at x4, at about **2,900 cycles
+per extra accepted face** -- a ring projected and clipped only to be thrown
+away.
+
+**The growth, measured.** Bundling greedily under a proximity limit, as a
+multiple of each part's own radius:
+
+| limit | faces | median | p75 | p90 | p99 | max | mean |
+|---|---|---|---|---|---|---|---|
+| +64 | 893 | 1.18 | 3.00 | 5.38 | 18.98 | 46.7 | **2.68** |
+| +128 | 755 | 1.88 | 4.20 | 7.62 | 23.39 | 51.4 | **3.53** |
+| +256 | 650 | 2.81 | 6.18 | 10.80 | 25.98 | 61.9 | **4.78** |
+| unlimited | 600 | 3.46 | 8.37 | 14.40 | 35.82 | 61.9 | **6.06** |
+
+Even the tightest limit that still absorbs anything worthwhile averages 2.68x,
+which reads off the table above as roughly +5% at the spawn and +20% at the
+other two yaws. Against that, 1,409 faces becoming 893 might take the spawn's
+108 drawn faces to about 70, and a drawn face costs roughly 4,000 cycles in
+setup -- around 8%. At the spawn it is close; at +90°, where only 29 faces are
+drawn out of 448 candidates, the saving is a tenth of the penalty.
+
+That asymmetry is the whole result: the penalty is paid per *candidate* and the
+saving is earned per *drawn* face, and this renderer rejects three quarters of
+its candidates. Nothing tightens that -- the proximity limit trades the yield
+away faster than it trades the radius down.
+
 ### What 30 FPS would take
 
 The 30 FPS budget is 559K cycles. The stages outside rendering already cost

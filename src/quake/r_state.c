@@ -42,6 +42,10 @@ typedef struct {
 
 /* Added to the map's spawn yaw, in Q8 turns: 16384 is a quarter turn. Used to
  * benchmark the same scene from a different angle without the scripted walk. */
+/* Multiplies every face's culling radius; 1 is the real geometry. */
+#ifndef BSP_RADIUS_SCALE
+#define BSP_RADIUS_SCALE 1
+#endif
 #ifndef BSP_YAW_OFFSET_Q8
 #define BSP_YAW_OFFSET_Q8 0
 #endif
