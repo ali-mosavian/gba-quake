@@ -1267,6 +1267,10 @@ First real-silicon observations, 2026-08-21:
   jitter reproduces on hardware where this mGBA build shows neither.
 - Together these overturn the 2023 verdict against mid-scanline affine
   updates: the instability was poll granularity, not the display pipeline.
+- **`bsp_textured_sc` runs fine and subjectively feels smooth** -- consistent
+  with mGBA's 9.54 FPS for this build. The emulator's cycle numbers, which
+  every figure in EXPERIMENTS.md rests on, are not flattering the renderer.
+  REG_MEMCTRL's fast-EWRAM setting also survives contact with real silicon.
 
 ## Observation log (mGBA 0.10.5)
 
