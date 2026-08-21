@@ -1,0 +1,740 @@
+# GBA affine raster lab
+
+A deliberately small set of ROMs for testing affine-background raster racing,
+plus an exact rotating-cube reference and an explicitly experimental affine path.
+
+## Reading the working experiment
+
+The staged rotating quad is the hardware-validation path. Its code is split by
+responsibility:
+
+- `src/quad_affine.c` configures BG2, builds the checker texture, selects an
+  immutable animation frame, and calls the raster routine.
+- `src/quad_stream.h` documents the generated scanline command format. Its
+  compile-time checks protect the layout consumed by assembly.
+- `src/asm/r_affine_arm.S`, function `raster_staged_frame`, copies one scanline from ROM
+  to IWRAM during HBlank and issues the remaining commands during HDraw.
+- `scripts/generate_quad.py` performs the offline projection, pixel-center
+  coverage, sub-texel correction, and <=32-pixel subdivision.
+- `src/generated/` contains generated data, not hand-maintained source.
+
+The other ROMs are isolated experiments and failed/reference paths retained so
+results remain reproducible; they are not all parts of one renderer.
+The `quad_affine*` names are intentionally historical: those ROMs validate one
+affine textured quad. The interactive renderer target is `cube_dynamic`.
+
+## Environment
+
+- Compiler: devkitARM GBA startup/linker support, with no libgba calls.
+- Reproducible build: official `devkitpro/devkitarm:latest` container.
+- Emulator: mGBA 0.10.5 or newer.
+- Target: ARM7TDMI at 16.78 MHz; one pixel is four CPU cycles, so 32 pixels are
+  nominally 128 cycles.
+
+On macOS, build the ROMs and the local command-line mGBA frontend:
+
+```sh
+brew install cmake sdl2-compat libzip
+open -a Docker
+./scripts/setup-mgba-cli.sh
+./scripts/build.sh
+./scripts/run.sh baseline
+```
+
+`setup-mgba-cli.sh` checks out the fixed mGBA 0.10.5 tag under the ignored
+`work/` directory and builds its lightweight SDL frontend without Qt or OpenGL.
+`run.sh` prefers that binary, so a ROM is passed directly to the emulator:
+
+```sh
+./scripts/run.sh quad_affine
+# Equivalent raw invocation:
+work/mgba-0.10.5/build-sdl/sdl/mgba build/quad_affine.gba
+```
+
+Pass a second argument to scale the emulator window, for example:
+
+```sh
+./scripts/run.sh quad_affine_staged 3
+```
+
+The emulator window closes cleanly with Ctrl-C in the launching terminal.
+
+If native devkitPro is installed at `/opt/devkitpro`, `build.sh` uses it instead.
+The supported devkitPro install is its pacman installer plus `gba-dev`.
+
+## ROMs and one-variable tests
+
+| ROM | Change made during visible scanline | Expected if assumption holds |
+|---|---|---|
+| `baseline` | none | stable 16-pixel checkerboard blocks |
+| `pa_pc` | only BG2PA/BG2PC | slope changes affect later pixels of that line |
+| `xy` | only BG2X/BG2Y | source point jumps on the current line |
+| `combined32` | PA/PC and X/Y from immediate ARM values | independently restarted 32-pixel pieces |
+| `stream32` | same commands, timed from EWRAM by IWRAM ARM | stable boundaries, no line-to-line drift |
+| `window` | combined test behind WIN0 | updates remain stable; only x=40..199, y=24..135 is visible |
+| `cube` | exact precomputed Mode 4 frames | clean correctness reference with page flipping |
+| `cube_affine` | variable face-aligned affine commands | unsupported experiment; visible corruption remains |
+| `cube_dynamic` | runtime geometry controlled by GBA buttons | double-buffered interactive affine cube experiment |
+| `cube_wireframe` | runtime transform/project + Mode 4 lines | stable interactive geometry/input baseline |
+| `bsp_wireframe` | extracted Quake 1 BSP face edges | first-person `dm1` neighborhood baseline |
+| `cube_software` | Mode 4 fixed-point triangle rasterizer | stable perspective-correct software-rendered cube |
+| `quad_reference` | exact precomputed Mode 4 plane | synchronized correctness reference for one rotating surface |
+| `quad_affine` | <=32-pixel affine pieces on the same plane | temporal experiment; currently flickers |
+| `quad_affine_static` | one frozen affine command frame | separates raster instability from animation updates |
+| `quad_affine_staged` | frozen quad with HBlank/IWRAM line staging | isolates visible EWRAM reads and late window setup |
+
+## Isolated rotating textured quad
+
+The two quad ROMs are generated from the same 24 camera-space poses and the
+same ray/plane intersection code. They advance at the same rate:
+
+```sh
+./scripts/run.sh quad_reference
+./scripts/run.sh quad_affine
+```
+
+`quad_reference` draws exact perspective-correct Mode 4 frames.
+`quad_affine` converts every visible scanline into balanced pieces no longer
+than 32 pixels, evaluates perspective-correct UVs at each piece's endpoints,
+and sends X/Y plus PA/PC commands through the existing EWRAM-to-IWRAM raster
+routine. There is no runtime geometry, division, or reciprocal math in either
+ROM, keeping this an experiment in display behavior rather than renderer speed.
+
+Still screenshots initially appeared coherent, but live observation shows
+substantial flicker. The screenshots cannot validate temporal stability and the
+animated affine test is therefore **not passed**. Captures are
+`observations/quad-reference-cli.png`, `quad-affine-cli-1.png`, and
+`quad-affine-cli-2.png`.
+
+`quad_affine_static` freezes pose 3 and consumes the same EWRAM command frame on
+every display frame. Live observation still showed intermittent flicker. The
+fault is therefore in scanline/window scheduling rather than command generation,
+animation cadence, or command-buffer publication. The polling-based 32-pixel
+technique is not considered viable as a renderer. A cube
+scanline can cross face boundaries, where one affine BG plus one rectangular
+window cannot independently mask and restart overlapping faces. The next safe
+renderer experiment is two non-overlapping faces with explicit per-span masks;
+the next practical renderer remains a conventional Mode 4 software rasterizer.
+
+`quad_affine_staged` is the animated follow-up scheduler experiment. During each HBlank it
+copies the next 196-byte line record into IWRAM and installs that line's WIN0H
+and initial affine command. During HDraw all remaining command reads come from
+IWRAM. Animation selects an immutable ROM frame by pointer during VBlank; there
+is no full-frame EWRAM copy. This
+intermediate test intentionally retains timer polling so its live stability can
+isolate staging/window/frame-publication timing before replacing the timer with
+a calibrated fixed-cycle schedule.
+
+The quad generator applies explicit sub-pixel and sub-texel correction. Polygon
+coverage and perspective rays are evaluated at screen pixel centers
+`(x+0.5,y+0.5)`, which also pre-steps UV from the true fractional edge to the
+first covered center. Each quantized affine segment is re-anchored at that
+sample. Texel conversion uses direction-dependent nearest rounding: add 128 in
+24.8 for a non-negative texture gradient, or 127 for a negative gradient. This
+implements `floor(C+1/2)` versus `ceil(C-1/2)` and prevents rotation-dependent
+tie changes when a texture axis reverses.
+
+## Rotating textured cube
+
+### Interactive runtime-generated cube
+
+Before testing texture mapping, validate the complete runtime geometry path:
+
+```sh
+./scripts/run.sh cube_wireframe 3
+```
+
+`cube_wireframe` transforms and projects all eight vertices every frame, draws
+all twelve edges into the hidden Mode 4 page, and flips pages only at VBlank.
+It uses the same D-pad, A/B, Start, and Select controls listed below. The four
+near-face edges are yellow; the remaining edges are white, making vertex/edge
+topology mistakes obvious. This is the baseline to preserve while textured
+rendering is reintroduced one face at a time.
+
+### Quake BSP wireframe
+
+```sh
+./scripts/run.sh bsp_wireframe 3
+```
+
+This ROM embeds compact rendering and visibility lumps from the local SoftQuake
+`dm1.bsp`. `scripts/extract_bsp_wireframe.py` converts Quake BSP version 29 into
+ROM arrays containing 3,306 vertices, 5,688 edges, 2,283 faces, 498 leaves,
+nodes, planes, surfedges, marksurfaces, and the original compressed PVS. It does
+not include textures, lightmaps, entity behavior, or collision hulls.
+
+Controls:
+
+- D-pad left/right: turn.
+- D-pad up/down: walk forward/backward.
+- A/B: strafe left/right.
+- Start: reset to the BSP player spawn.
+
+Each frame traverses nodes to find the camera leaf. The Quake RLE PVS and unique
+candidate-face list are rebuilt only when that leaf changes. Per-frame culling
+appends surviving surfedges and vertices directly to compact lists, with no
+full-map face or edge scan. Vertices are batch-transformed and projected once.
+Edges crossing the camera are clipped to an eight-unit near plane and then to a
+120x80 logical viewport, which is expanded to 240x160 during the page flip.
+Wireframe still shows edges through nearer faces because it has no depth buffer;
+that is distinct from PVS, which removes geometry in non-visible leaves.
+
+```sh
+./scripts/run.sh cube_dynamic 3
+```
+
+`cube_dynamic` does not replay generated poses. At runtime it rotates and
+projects eight vertices, culls cube faces, scan-converts their convex spans,
+evaluates perspective planes at <=32-pixel piece endpoints, and builds the next
+`QuadFrame` in EWRAM. The completed frame is published atomically while the
+existing IWRAM routine displays the previous frame at 60 Hz.
+
+Controls:
+
+- D-pad: rotate around X and Y.
+- A/B: zoom in/out.
+- Start: toggle automatic Y rotation.
+- Select: reset the pose and zoom.
+
+Generation is restricted by the actual VCOUNT deadline and stops two scanlines
+before VBlank ends. Thus a complex pose may take more than one display frame to
+finish, but an incomplete command buffer is never published. Per-face
+perspective planes and a reciprocal LUT remove divisions from span endpoint
+sampling; only vertex projection, plane setup, and polygon-edge intersections
+use integer division.
+
+Face changes expose the remaining hardware limitation: BG2PA, BG2PC, BG2X, and
+BG2Y are four separate writes, not one atomic mapping update. Commands are issued
+four pixels early so the reference-point writes land near the intended edge,
+which greatly reduces colored wedges, but moving shared edges still require live
+emulator and real-hardware scrutiny.
+
+Build and run it with:
+
+```sh
+./scripts/build.sh
+./scripts/run.sh cube
+```
+
+`cube` is the correctness baseline. `scripts/generate_cube_reference.py`
+ray-casts 24 perspective-correct 240x160 indexed frames. The ROM DMA-copies the
+next frame to the hidden Mode 4 page during VBlank and flips pages afterward.
+It is stable at about 60 fps in mGBA 0.10.5, with continuous faces and no tearing
+or streaks. Evidence is in `observations/cube-reference-mgba.jpg` and
+`observations/cube-reference-mgba-2.jpg`.
+
+Run the failed affine experiment separately:
+
+```sh
+./scripts/run.sh cube_affine
+```
+
+`cube_affine` evaluates perspective-correct UV endpoints, restarts at cube-face
+edges, subdivides longer runs to <=32 pixels, copies a 31,360-byte command frame
+to EWRAM during VBlank, and consumes it from IWRAM. It still exhibits visible
+streaks, unstable scanlines, coarse warping, and occasional face corruption.
+The earlier screenshots are retained as `observations/cube-affine-mgba*.jpg`.
+
+The clean Mode 4 result proves that the geometry, visibility, atlas, and UV data
+are correct. It does **not** validate the affine cube technique. The remaining
+fault is in variable mid-scanline register/window scheduling and in the inability
+of one affine BG mapping to represent arbitrary face transitions without tighter
+masking. Do not use `cube_affine` as a renderer baseline.
+
+### Stable Mode 4 software experiment
+
+```sh
+./scripts/run.sh cube_software
+```
+
+`cube_software` removes all visible-period register racing. It renders indexed
+pixels into the hidden Mode 4 page and changes the display page only during
+VBlank. The first conservative version samples at 120x80 and expands each sample
+to a 2x2 block. It uses integer edge functions, a 19.2 KB EWRAM inverse-depth
+buffer, perspective-correct `u/z`, `v/z`, and `1/z`, and a generated reciprocal
+LUT for the final texture-coordinate divide.
+
+The 48 rotated/projected vertex poses are precomputed to keep this experiment
+focused on rasterization. Triangle coverage, depth testing, perspective texture
+lookup, framebuffer writes, and page flipping happen on the GBA CPU. The initial
+prototype used three compiler divisions per pixel and was unusably slow. The
+current inner loop instead incrementally steps generated fixed-point `1/z`,
+`u/z`, and `v/z` planes and uses a reciprocal LUT; there is no per-pixel divide.
+Sub-pixel edge-on triangles are discarded to keep their plane coefficients in
+safe 32-bit ranges.
+
+Observed in SDL mGBA 0.10.5: a coherent rotating textured cube with stable page
+flips and none of the affine path's scanline streaks. The visible 2x2 pixels and
+coarse checker texture are expected. Evidence is in
+`observations/cube-software-cli-2.png` and `cube-software-cli-3.png`.
+
+### Quake BSP wireframe experiment
+
+```sh
+./scripts/run.sh bsp_wireframe 3
+```
+
+This ROM packages the complete Quake `dm1.bsp`. It caches a compact PVS-derived
+candidate-face list and contiguous runtime faces for the current leaf, builds
+compact unique edge and vertex lists each frame, and never scans every map face
+or edge. Map vertices and edges are copied to EWRAM once at startup. Hot culling,
+edge processing, and line code is compiled as ARM code in IWRAM. A hand-written
+ARM batch loop fuses vertex transformation, reciprocal projection, and outcode
+generation so every active vertex is read once. Normal projection and clipping
+contain no compiler software division.
+
+Rendering occurs in a 9,600-byte 120x80 EWRAM framebuffer. Specialized
+horizontal, vertical, shallow, and steep line loops write ordinary EWRAM bytes;
+an ARM loop expands these to the hidden 240x160 Mode 4 page before the VBlank
+flip. This replaces scattered VRAM read-modify-write plotting.
+
+BSP projection retains 32-bit screen coordinates until an edge has been clipped
+inside the logical viewport. This is required because near-plane endpoints can
+project beyond the signed 16-bit range; narrowing earlier makes those values
+wrap to the opposite side of the screen. Variable clipping ratios use an
+unsaturated 32-bit Q24 reciprocal table.
+
+Each edge is classified from its endpoint outcodes before clipping. Fully visible
+edges go straight to the rasterizer, edges sharing an outside plane are rejected,
+and only genuine boundary crossings run the near/screen intersection code. The
+edge is drawn immediately, so there is no full clipped-edge queue.
+
+Steady-state spawn profiling in SDL mGBA 0.10.5 after the 30 FPS pass measured:
+
+```text
+logical clear                         26,471 cycles
+leaf lookup / cached PVS               7,690
+face cull / edge+vertex lists        125,611
+fused transform/project/outcodes      77,788
+edge classify/clip/draw              170,522
+paired-pixel 2x expansion             96,568
+total                                504,698 cycles
+```
+
+This is about 33.2 newly rendered frames per second at the profiled spawn view,
+below the 559K-cycle 30 FPS budget and about 10.2x faster than the original
+5.16M-cycle implementation. The frame contains 746 candidate faces, 122 accepted
+faces, 509 unique edges, 403 unique vertices, and 425 drawn edges. Of the edge
+tests, 401 are trivial accepts, 81 are trivial rejects, four cross the near
+plane, and 27 require screen clipping. Counts differ slightly from the old
+reference because the optimized face test now uses an exact 64-bit plane dot
+product instead of the old overflowing 32-bit intermediate.
+
+The ELF uses about 5.2 KB of the 32 KB IWRAM and 221.6 KB of the 256 KB EWRAM.
+The final map contains no compiler division helper. Spawn, rotated, and moved
+views were checked in mGBA without near-plane wrap. Movement can enter solid
+brushes because this rendering experiment deliberately has no collision. The
+wireframe also has no hidden-line removal, so background edges remain visible
+through foreground surfaces.
+
+A leaf transition synchronously rebuilds the PVS/runtime-face cache and can add
+a one-frame cost; transition worst-case timing has not yet been exhaustively
+measured. Performance is view-dependent, and the timing/register behavior still
+needs confirmation on a physical GBA. The steady-state 504.7K result leaves only
+about 54K cycles below the strict 30 FPS limit, rather than the desired 500K
+game/audio margin.
+
+### Experimental 32-pixel perspective texture spans
+
+```sh
+./scripts/run.sh bsp_textured 3
+```
+
+The BSP renderer uses a Quake-style unity source layout under `src/quake/`:
+
+- `r_state.c` owns renderer types, generated data and working memory.
+- `r_bsp.c` owns BSP/PVS traversal and visible geometry construction.
+- `r_clip.c` owns projected-edge clipping.
+- `r_surf.c` owns textured surface preparation and submission.
+- `r_main.c` owns input, frame scheduling and profiling.
+- `d_draw.c` contains low-level wireframe drawing.
+- `d_scan.c` contains texture-plane math and the C scan-converter reference.
+- `d_polyset_arm.inc` is the production ARM textured-polygon routine.
+- `r_fixed.h` names Q8/Q14/Q16 arithmetic and provides compile-time
+  `TO_F8`, `TO_F16` and `TO_F32` float-to-fixed conversions.
+
+`r_unity.c` includes these modules into one translation unit. This preserves
+local assembly symbols, generated map data ownership and cross-module optimization
+without returning to one oversized source file.
+
+The standalone ARM assembly is split by ownership under `src/asm/`:
+
+- `r_math_arm.S` contains projection and fixed-point helpers.
+- `d_frame_arm.S` contains framebuffer clearing and 2× expansion.
+- `r_bsp_arm.S` contains BSP plane distance and batched transform/project.
+- `r_affine_arm.S` contains the older affine raster-racing experiments.
+
+Because these are separate objects, the linker can now discard the complete
+legacy affine module from the BSP ROM. Textured BSP IWRAM use consequently falls
+from about 7.45KB to about 5.98KB.
+
+`bsp_textured` preserves the wireframe ROM and adds a separate filled-face test.
+It triangulates accepted convex BSP faces, clips them against the near plane,
+keeps a 120x80 inverse-depth buffer, and maps DM1's embedded miptex data using
+the BSP texinfo axes and the original Quake palette. Texels stay in ROM; only
+compact descriptors and runtime geometry consume RAM. On every triangle scanline,
+perspective-correct `u` and `v` are evaluated at boundaries no more than 32
+logical pixels apart; pixels inside each piece use affine `du/dx` and `dv/dx`.
+Non-power-of-two source textures are padded offline so wrapping remains a mask.
+
+The textured ELF contains no compiler division helper. Plane/edge setup uses a
+normalized reciprocal-table quotient, short spans use reciprocal constants, and
+perspective correction uses the existing reciprocal LUT. Faces are scan-converted
+as convex polygons rather than triangle fans. Their near-to-far BSP order is built
+once when the camera enters a leaf; ordinary frames use first-hit coverage and can
+discard already covered spans without a depth buffer. The ARM span kernel runs
+from IWRAM.
+
+At the DM1 spawn, SDL mGBA 0.10.5 now measures approximately 1,415,166 cycles per
+newly rendered frame, or 11.85 FPS. This is 8.2x faster than the first native-texture
+version (11,605,622 cycles, 1.45 FPS), while retaining the same miptex data,
+near-plane clipping, 120x80 output and 32-pixel perspective correction. The stable
+breakdown is approximately 123K face culling/list construction, 78K fused vertex
+transform/projection, 1.110M textured polygon rendering, 96.6K expansion, 26.5K
+clear, and the remaining timer/cache overhead. Scanline edge positions, plane row
+origins, and the three perspective-plane values at successive 32-pixel boundaries
+now advance by addition instead of being multiplied from their origins repeatedly.
+That milestone saved about 37.3K cycles (2.4%) with unchanged sampling.
+
+A 32KB EWRAM hot-texture cache is populated lazily in near-to-far draw order.
+At spawn it fills completely and reduces the frame by a further 111K cycles (7.3%),
+confirming that scattered Game Pak ROM texel reads were a substantial cost. Cached
+textures are byte-identical copies; textures that do not fit continue to sample ROM,
+so cache capacity affects speed rather than correctness. The cache currently has no
+eviction policy, making this a controlled proof of value rather than the final
+leaf-aware cache design. EWRAM use is now about 258.2KB, leaving only about 3.9KB.
+
+A linear EWRAM span-command buffer plus IWRAM ARM consumer was measured and
+reverted: it reached only about 1.555M cycles because creating and later rereading
+the commands outweighed the cheaper inner loop. A four-word-per-row coverage mask
+was also reverted after increasing the frame to about 1.73M cycles, largely from
+fragmenting runs at word boundaries. Paired logical-framebuffer stores measured
+about 1.560M cycles and were reverted for failing the 1% retention threshold. The
+software path remains well above the 559K-cycle 30 FPS budget; the next useful
+target is reducing polygon/gradient setup or testing a PPU-assisted representation,
+not moving the same per-pixel work through another EWRAM queue.
+
+Pre-scaling `v` and `dv` by the power-of-two texture-width shift before each span
+was also measured. Although it removes the texel-row multiply from the pixel loop,
+the generated ARM loop increased to about 1.442M cycles versus 1.415M for the
+multiply form. ARM7TDMI multiplication terminates early for the small 16/64/128
+width operands, while the pre-scaled form increases masking and register pressure,
+so the original multiply was retained.
+
+A runtime-generated complete mip-3 set was tested in 2,756 bytes of EWRAM. The
+best version kept texture coordinates in their original units and selected mip-3
+texels with an immediate shift, but still measured about 1.428M cycles versus
+1.415M for the 32KB full-resolution cache. Mip 3 recovers roughly 30KB of EWRAM
+and reduces visual detail, but does not reduce pixel/span count; it was reverted
+because this experiment is currently optimizing frame time.
+
+Two diagnostic ROMs isolate the current textured inner loop. At spawn,
+`bsp_textured_solid` measures about 1.015M cycles when it retains scan conversion,
+perspective and coverage but replaces texel addressing/loading with a constant
+color. `bsp_textured_nocoverage` measures about 1.309M cycles while sampling every
+polygon pixel without testing or updating coverage. These results put roughly
+400K cycles in texel addressing/loading and at least 100K in byte coverage.
+
+A hand-written IWRAM ARM texel/coverage kernel was then tested with one call per
+32-pixel piece. It measured about 1.443M cycles, 27K slower than the 1.415M C
+reference: building eleven arguments and saving registers roughly one thousand
+times per frame outweighed its tighter pixel loop. It was removed from production.
+Any further assembly version must consume a whole polygon scanline or polygon so
+that setup and register-save overhead are amortized across multiple pieces.
+
+The production renderer now calls `draw_textured_polygon_arm`, a standalone full
+polygon routine in `src/quake/d_polyset_arm.inc`. It includes gradient
+and reciprocal setup, edge-walker construction, scan conversion, 32-pixel
+perspective correction, coverage, EWRAM texture-cache selection, and texel drawing
+in one ARM/IWRAM call per polygon. The initial assembly is mechanically seeded
+from the verified optimized C instruction stream, with private labels isolated,
+so it is bit-identical and establishes a safe hand-optimization baseline. It
+initially measured the same 1.415M cycles as the C version; simply expressing the
+same instructions in an `.inc` file was not itself a speedup. The uncalled C reference
+is discarded from the production ELF but remains available to regenerate and
+compare the assembly. `scripts/extract_polygon_asm.py` performs that extraction.
+
+The first manual assembly pass now loads the packed texture width/height descriptor
+once per polygon instead of issuing two ROM halfword reads for every uncovered
+pixel. It then keeps the height mask and width in registers throughout scanline
+drawing, reconstructing neither for each texel. These changes reduce the stable
+spawn result from about 1.415M to **1.376M cycles**, with identical texture
+addressing.
+
+Coverage is now four 32-bit words per 120-pixel row. Perspective pieces end at
+global 32-pixel boundaries, so the ARM loop loads one coverage word, keeps it in
+a register while testing/setting pixels, and stores it once. A fully occupied
+`0xffffffff` word bypasses texel drawing immediately. This replaces per-pixel
+EWRAM coverage byte loads/stores without introducing a command buffer. The stable
+spawn result is now about **1.352M cycles**, approximately 12.4 FPS: roughly 63K
+cycles (4.5%) below the initial full-assembly baseline. The optimized `.inc` is
+the authoritative production source; `extract_polygon_asm.py` regenerates the
+compiler-derived reference baseline and is not intended to overwrite hand edits.
+
+Every timed ROM updates lines 8 through 151. Commands target timer values 0,
+128, ..., 896 after detecting the start of HDraw. `observed_cycles[]` records the
+timer value immediately before each write, so a debugger can quantify loop
+overshoot. The first command is intentionally diagnostic: because HBlank polling
+and timer setup take cycles, it cannot land at x=0.
+
+Run one ROM at a time and capture a lossless screenshot. Locate each transition
+relative to the intended x positions 0, 32, ..., 224. The difference is the
+observable emulator pipeline/software offset. Repeat frames should be identical;
+any shimmer means the timing method is not deterministic enough.
+
+## Texture correctness (perspective-correct BSP spans)
+
+The textured BSP renderer used to swim: textures slid across surfaces as the
+camera moved or turned. It was not the 32-pixel affine approximation. A
+host-side model of the on-target fixed-point pipeline
+(`scripts/profile.py` measures the ROM; the model itself is throwaway) put the
+error at **110.6 texels mean and 588 worst** at real `dm1` coordinates — the
+texture was effectively unrelated to the surface, and because every error term
+depends on depth and screen position it moved with the camera.
+
+Four independent defects compounded, in order of contribution:
+
+1. **Absolute world texture coordinates.** `s = dot(vertex, axis) + offset`
+   reaches several thousand texels on this map. Quake subtracts a per-face
+   origin (`texturemins`); this did not, so `u/z` had no fixed-point headroom
+   left. The extractor now emits `u_base_q8`/`v_base_q8` per face, floored to a
+   whole multiple of the texture size so masking still wraps to the same texel.
+2. **A saturating reciprocal table.** `reciprocal_q24` is `uint16_t`, so
+   `2^24 / n` pins at 65535 for every index below 256 — that is every surface
+   further away than 256 world units, with the error growing as `z / 256`. The
+   span endpoints now use the unsaturated `uint32_t` table. This is the same
+   defect that was previously found and fixed in the clipper.
+3. **Integer plane gradients.** `d(1/z)/dx` is a fraction of a unit per pixel
+   across a face this size, so it truncated to zero and perspective correction
+   stopped happening. Gradients are now fractional.
+4. **Integer screen positions in the fit.** The interpolation planes were
+   fitted through snapped pixel centres, shearing the plane by up to half a
+   pixel of lever arm and re-shearing every time a vertex crossed a pixel
+   boundary. Vertices now carry a Q8 sub-pixel position for the fit, and the
+   planes are evaluated at pixel centres.
+
+Measured against an exact reference, the four together take the error from
+**110.6 to 0.46 mean texels (588 to 1.65 worst)**.
+
+Two supporting changes matter as much as the four above:
+
+- The screen position and `1/z` now come from **one** reciprocal lookup per
+  vertex. They previously used different roundings of the depth index — one
+  rounded, one truncated — so the fitted plane disagreed with where the vertex
+  was drawn.
+- Fixed-point widths are chosen for range, not just precision. `1/z` keeps Q16;
+  `u/z` and `v/z` use Q4, because the per-face origin bounds where a face's
+  texture *starts* but not how far it *extends*, and a large floor overflows a
+  32-bit Q8 accumulator. Q4 measures within 0.0007 texels of Q16.
+
+### Reproducible measurement
+
+`scripts/profile.py` drives the ROM through mGBA's GDB stub: it runs the ROM,
+halts it, reads the `BspProfile` counters straight out of EWRAM, and can dump
+the visible Mode 4 page as a PNG.
+
+```sh
+python3 scripts/profile.py bsp_textured 5 --shot=/tmp/spawn.png
+```
+
+`bsp_textured_walk` follows a fixed camera path so motion tests and timings
+repeat frame for frame. `bsp_textured_cref` adds work counters (they cost about
+157K cycles a frame, so they stay out of the measured build), and
+`bsp_textured_solid`, `_nocoverage`, `_nospans`, `_norows` and `_nowalkers`
+progressively remove stages so the cost ladder can be attributed.
+
+## Performance status
+
+At the `dm1` spawn, with the corrected texturing:
+
+```text
+total                    1,189,031 cycles     14.11 FPS
+  clear                        3,970     0.3%
+  BSP/PVS rebuild              5,876     0.5%
+  face culling               113,382     9.5%
+  vertex transform            69,681     5.9%
+  textured rendering         937,967    78.9%
+  2x expansion                58,131     4.9%
+```
+
+The work counters explain the shape of that number:
+
+```text
+faces drawn 115 | rows 1,008 | spans 1,151 | pixel iterations 6,362 | texels 4,951
+```
+
+**This renderer is setup-bound, not fill-bound.** Fewer than 6,400 pixel
+iterations are performed per frame, yet rendering costs 1.14M cycles: roughly
+93% is per-face and per-row setup. `dm1` at 120x80 presents 115 faces averaging
+43 drawn pixels each, so per-face setup never amortises. Optimising the texel
+loop — the obvious target — cannot move this.
+
+Retained optimisations, each measured:
+
+- One determinant reciprocal shared by all six gradients instead of
+  re-normalising per gradient: **-520K cycles**.
+- Span stepping derived from the gradients rather than a second perspective
+  endpoint plus two span divisions: **-47K**.
+- `LDM`/`STM` bursts in the framebuffer clear and 2x expansion: **-37K**,
+  bit-identical output.
+- **Logical framebuffer and coverage bitmap moved from EWRAM to IWRAM**:
+  **-46K** (clear -12K, expansion -12K, rendering -22K). IWRAM is a 32-bit bus
+  at one cycle per word against EWRAM's 16-bit at roughly six. Plain `.bss`
+  lands in IWRAM under the devkitARM GBA script, so this is just dropping the
+  `EWRAM` attribute. IWRAM use is 19.3KB of 32KB; EWRAM fell to 233.5KB.
+- Texture width, height and wrap masks hoisted into locals for the whole
+  polygon instead of being re-read from the ROM descriptor: **-74K**.
+- **Length-specialised span fillers**: a run known to be fully uncovered
+  dispatches once into fully unrolled straight-line code (one fall-through body
+  covering lengths 1..32) and needs no per-pixel coverage test, recording the
+  whole run with a single mask OR: **-15K**.
+- **Texel row offset without a multiply**, taken from the mgl 8-bit affine
+  span filler (`src/cfmt/b8/8plxt.asm`), which keeps the v integer already
+  shifted by log2(width) and wraps it with a mask shifted to match, so the x86
+  addressing mode adds row and column for free. ARM cannot add two index
+  registers in one load, but it gets the shift free inside the AND via the
+  barrel shifter, so the row multiply still disappears: **-12K**, bit-exact.
+  Masking a pre-shifted value with `(height-1) << k` is exactly equivalent to
+  masking then shifting -- the mask's low zero bits discard precisely the
+  fractional bits the shift raised. The generated inner loop is now seven
+  instructions with no multiply, which is the ARM floor for this addressing:
+
+  ```asm
+  and  r4, r10, r3, asr #8      @ row offset, v pre-scaled + shifted mask
+  and  r5, r9,  r2, asr #8      @ column
+  add  r4, r8, r4               @ texture base + row
+  ldrb r4, [r4, r5]             @ texel
+  strb r4, [lr], #1             @ pixel
+  add  r3, r3, r1               @ v += dv
+  add  r2, r2, r0               @ u += du
+  ```
+- **Game Pak wait states and the prefetch buffer**: `REG_WAITCNT` was never
+  written, so every ROM access ran at the BIOS default of 4/2 with the
+  prefetcher off. Setting 3/1 with prefetch enabled is **-25K** for one
+  register write. (The bandwidth table below always assumed this setting; the
+  code did not actually apply it.)
+- **One-wait-state EWRAM** via the undocumented `0x04000800`: **-29K**. See the
+  caveat on `MEMCTRL_FAST_EWRAM` in `src/gba_hardware.h` -- it is not a
+  documented register and a DS in GBA mode hangs on it.
+- **Early rejection of hidden spans** using that same mask, tested *before* any
+  perspective work: **-42K**. Of 1,187 segments, 546 are fully clear, 405 are
+  fully hidden and 236 are mixed, so a third skip four reciprocal multiplies
+  each.
+
+Measured and reverted:
+
+- **The span filler as hand-written ARM in IWRAM**
+  (`src/asm/d_span_arm.S`, kept out of the build). Written at the per-scanline
+  boundary, which is the widest one short of the whole polygon, and verified
+  **bit-exact** against the C kernel -- and still **57K cycles slower**
+  (1,312,087 against 1,254,964). The sweep state (current x, row end, and the
+  three plane accumulators) has to live in a stack frame and be reloaded and
+  stored on every segment, about fifteen extra transfers across ~1,200
+  segments, plus a prologue and epilogue on each of ~1,000 rows. Inlined into
+  the polygon routine, the compiler keeps all of that in registers for the
+  whole face and never marshals it. This repeats, one level up, the lesson of
+  the earlier per-segment kernel: assembly only wins here at a boundary wide
+  enough that the state never round-trips, which means the whole polygon.
+- **Four texels packed into one wide store**, structured as `TEXEL` /
+  `SHIFT_ONE` / `WRITE_{ONE,TWO,FOUR}` macros with the run split into a lead,
+  a word-aligned body and a tail. Bit-exact, and attributed by measuring the
+  same structure twice:
+
+  | variant | cycles |
+  |---|---:|
+  | flat 1..32 dispatch, byte stores | **1,254,964** |
+  | lead/body/tail dispatch, byte stores | 1,284,794 |
+  | lead/body/tail dispatch, wide stores | 1,281,211 |
+
+  The wider stores are worth a real but tiny **-3.6K**; the alignment handling
+  and the three dispatches they require cost **+30K**, ten times as much. The
+  framebuffer is in IWRAM, where a byte store and a word store both take one
+  cycle, so packing only trades three stores for three ORs. Alignment cannot be
+  skipped either: an unaligned wide store on ARM7TDMI does not fault, it writes
+  to the aligned address. The macro decomposition itself was kept -- it states
+  the fetch/step/store split explicitly -- with the single flat dispatch.
+- **An earlier ad-hoc attempt at the same idea**, with the aligned-quad test
+  written inline in a loop rather than in the dispatch. Tried with the framebuffer in
+  IWRAM (1,115K -> 1,138K) and again with it back in EWRAM (1,137K -> 1,145K);
+  slower both ways. Segments average about five pixels, so an aligned quad that
+  is entirely free rarely exists, and once the framebuffer is in IWRAM a byte
+  store already costs one cycle, leaving the packing shifts with nothing to
+  buy. The four texel *fetches* cannot be combined at all: `u` and `v` step
+  independently, so the texels are not adjacent in the texture.
+- **Active-edge scan conversion** (sort the edge walkers per face, maintain a
+  compact active set). Correct and bit-identical, but **6.5% slower**: faces
+  average only 8.8 rows, so the per-face sort never pays for itself. This is
+  the clearest evidence that the bottleneck is per-face, not per-row.
+- Hoisting the texinfo lookup out of the per-vertex loop: 0.26%, below the 1%
+  retention threshold; kept only because it simplifies the face interface.
+
+### What 30 FPS would take
+
+The 30 FPS budget is 559K cycles. The stages outside rendering already cost
+**295K** of it. Extrapolating each remaining bucket to a hand-written ARM
+equivalent puts the runtime-only ceiling at roughly **750-850K cycles, or
+20-23 FPS**. Reaching 30 FPS needs the *work volume* reduced, not the work made
+cheaper — the candidates are merging coplanar same-texture faces (offline in
+the extractor, or at leaf-cache rebuild time to stay runtime-only), a coarser
+logical resolution, or PPU-assisted fill.
+
+The hand-optimised `src/quake/d_polyset_arm.inc` is currently **out of the
+build**: it encodes the old `TextureVertex` layout and the saturating
+reciprocal table. `bsp_textured` runs the corrected C kernel from IWRAM until
+that routine is rewritten against the new math.
+
+## Assumptions being tested
+
+1. BG2PA/BG2PC are sampled during a scanline rather than latched only at its start.
+2. A visible-period write to BG2X/BG2Y updates the internal affine reference for
+   the current scanline immediately (documented, but tested here at pixel scale).
+3. Writing both groups from a hard-coded IWRAM routine can restart a
+   piecewise-affine mapping every 32 pixels, without any EWRAM-stream dependency.
+4. An IWRAM ARM consumer can read a 16-byte EWRAM command and meet successive
+   128-cycle deadlines. The timer timestamps distinguish lateness from PPU latency.
+5. WIN0 clipping does not perturb the register-update behavior.
+
+## Observation log (mGBA 0.10.5)
+
+| Test | mGBA observation | Measured offset/timing | Hardware status |
+|---|---|---|---|
+| baseline | stable checkerboard | n/a | pending |
+| pa_pc | later pixels change slope on the same scanline | boundaries stable frame-to-frame | required |
+| xy | current-line source point visibly jumps | boundaries stable frame-to-frame | required |
+| combined32 | hard-coded PA/PC + X/Y pieces are visible | 128-cycle targets | required |
+| stream32 | EWRAM-fed result is stable at 59.7 fps | actual timer samples below | required |
+| window | clipping is correct and updates remain stable | no additional drift observed | optional after core tests |
+| quad_reference | clean rotating perspective plane | exact precomputed pixels | emulator reference |
+| quad_affine | substantial live flicker despite coherent stills | <=32-pixel pieces | failed; isolate with static ROM |
+| quad_affine_static | intermittent flicker with immutable geometry and commands | same commands every frame | failed; scheduling instability confirmed |
+
+For `stream32`, the EWRAM `observed_cycles` buffer contained:
+
+```text
+target:    0  128  256  384  512  640  768  896 cycles
+actual:    9  131  260  389  518  640  769  898 cycles
+overshoot: 9    3    4    5    6    0    1    2 cycles
+```
+
+After the unavoidable first-command setup cost, the polling loop was never more
+than six cycles (1.5 pixels) late in mGBA. This measures the CPU write issue time,
+not the PPU's register-to-pixel sampling latency. The screenshots in
+`observations/` are the evidence from this run; `stream32-cycles-mgba.jpg` shows
+the raw little-endian timer values at EWRAM address `0x02000000`.
+
+The visual tests confirm same-scanline effects in mGBA, but the checker pattern is
+not by itself a precise latency ruler. A follow-up calibration should use a
+single-color discontinuity and compare a lossless 1x framebuffer capture before
+turning the observed offset into a hard-coded deadline correction.
+
+Emulator success is evidence about mGBA behavior, not proof of LCD pipeline timing.
+At minimum, repeat `pa_pc`, `xy`, `combined32`, and `stream32` on one real GBA model
+with a flash cart/capture setup before relying on the offsets. Different GBA/AGS
+revisions should be checked if exact pixel boundaries matter.
+
+## Scope boundary
+
+The exact cube is precomputed rather than projected on the GBA. Runtime
+projection, clipping, reciprocal lookup, and polygon setup remain excluded. The
+affine cube experiment is currently falsified as a visually correct renderer;
+the small one-variable register tests remain useful independently.

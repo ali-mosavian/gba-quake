@@ -1,0 +1,10 @@
+build/
+work/
+# Everything under src/generated/ is produced by scripts/; the BSP package also
+# needs dm1.bsp and pak0.pak, which are not redistributable. See the Makefile
+# for the regeneration rules.
+src/generated/
+__pycache__/
+.DS_Store
+*.sav
+*.ss*
