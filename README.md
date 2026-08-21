@@ -597,6 +597,34 @@ overturn: the scan-conversion rewrites lost to per-face amortisation over
 are now *shorter*, and the assembly span kernel lost on state marshalling,
 which is workload-independent.
 
+### Hand-written assembly: three attempts, three losses
+
+`src/asm/r_project_arm.S` projects a face's whole vertex ring -- camera
+lookup, texture coordinates, projection, viewport test -- in one call. It is
+bit-exact against the C and **20% slower**: the face front end went from
+290,892 cycles to 348,349.
+
+That is the third such attempt, and they all lose the same way:
+
+| kernel | boundary | result |
+|---|---|---|
+| `d_span_arm.S` | per 32-pixel segment | +27K, argument setup ~1,000x a frame |
+| `d_span_arm.S` | per scanline | +57K, sweep state spilled per segment |
+| `r_project_arm.S` | per face ring | +57K, axis terms reloaded per vertex |
+
+The C wins because it is *inlined into the caller*, so the compiler allocates
+registers across the whole face loop and keeps axis terms and table bases live
+between vertices. A standalone routine cannot: it pays a nine-register
+prologue and seven argument loads per face, then reloads all ten axis terms
+per vertex, because eight axis values plus six base pointers plus an
+accumulator do not fit the register file.
+
+Assembly only wins here at a boundary wide enough that state never leaves
+registers, which for this renderer means the *entire* face pipeline as one
+routine -- project, fit, walk, scan, fill -- not a stage of it. The single
+place hand assembly did pay was replacing `__clzsi2`, a libgcc call the
+compiler could not avoid.
+
 ### Where the remaining time is
 
 Ranked by size, with what each would need:
