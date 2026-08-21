@@ -355,7 +355,7 @@ void draw_textured_polygon_reference(
     degenerate_face_count += (uint16_t)(plane.inverse_depth_dx + plane.u_over_depth_dy);
     return;
 #endif
-    TextureEdgeWalker walkers[33];
+    TextureEdgeWalker walkers[CLIP_RING_MAX];
     unsigned walker_count = build_edge_walkers(vertices, vertex_count, walkers);
 #ifdef BSP_TEXTURED_NO_ROWS
     degenerate_face_count += (uint16_t)(walker_count + walkers[0].x_q8);

@@ -34,6 +34,8 @@ enum {
     DISPLAY_MODE_4 = 4, DISPLAY_PAGE_SELECT = 1u << 4,
     FOCAL_LENGTH = 56, NEAR_PLANE_Q8 = Q8_FROM_INT(8),
     EYE_HEIGHT_Q8 = Q8_FROM_INT(22), INVALID_LEAF = 0xffff,
+    /* Room for a face ring plus one vertex per clip plane. */
+    CLIP_RING_MAX = 40,
 };
 
 typedef struct { int16_t x, y, z; } MapVertex;

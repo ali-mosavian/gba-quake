@@ -90,27 +90,70 @@ static ClipTextureVertex interpolate_clip_vertex(const ClipTextureVertex *a,
     return result;
 }
 
-static unsigned clip_texture_polygon_near(const ClipTextureVertex *input,
-                                          unsigned count,
-                                          ClipTextureVertex *output)
+/* Signed distance to one clip plane, in camera space.
+ *
+ * plane 0 is the near plane; 1..4 are the frustum sides, expressed so that a
+ * vertex is inside when the result is >= 0:
+ *   right   60*z - 56*h      left  60*z + 56*h
+ *   bottom  40*z - 56*v      top   40*z + 56*v
+ * which is exactly screen x in [0,120] and y in [0,80] after projection. */
+static int32_t clip_distance(const ClipTextureVertex *vertex, unsigned plane)
 {
-    unsigned output_count = 0;
+    switch (plane) {
+    case 0: return vertex->depth - NEAR_PLANE_Q8;
+    case 1: return 60 * vertex->depth - FOCAL_LENGTH * vertex->horizontal;
+    case 2: return 60 * vertex->depth + FOCAL_LENGTH * vertex->horizontal;
+    case 3: return 40 * vertex->depth - FOCAL_LENGTH * vertex->vertical;
+    default: return 40 * vertex->depth + FOCAL_LENGTH * vertex->vertical;
+    }
+}
+
+/* Sutherland-Hodgman against one plane. */
+static unsigned clip_polygon_plane(const ClipTextureVertex *input, unsigned count,
+                                   ClipTextureVertex *output, unsigned plane)
+{
+    unsigned written = 0;
     ClipTextureVertex previous = input[count - 1];
-    int previous_inside = previous.depth >= NEAR_PLANE_Q8;
+    int32_t previous_distance = clip_distance(&previous, plane);
     for (unsigned i = 0; i < count; ++i) {
         ClipTextureVertex current = input[i];
-        int current_inside = current.depth >= NEAR_PLANE_Q8;
-        if (current_inside != previous_inside) {
-            int fraction = signed_ratio_q16_lut(NEAR_PLANE_Q8 - previous.depth,
-                                                current.depth - previous.depth,
+        int32_t current_distance = clip_distance(&current, plane);
+        if ((previous_distance < 0) != (current_distance < 0)) {
+            int fraction = signed_ratio_q16_lut(-previous_distance,
+                                                current_distance - previous_distance,
                                                 clipping_reciprocal_q24);
-            output[output_count++] = interpolate_clip_vertex(&previous, &current, fraction);
+            output[written++] = interpolate_clip_vertex(&previous, &current, fraction);
         }
-        if (current_inside) output[output_count++] = current;
+        if (current_distance >= 0) output[written++] = current;
         previous = current;
-        previous_inside = current_inside;
+        previous_distance = current_distance;
     }
-    return output_count;
+    return written;
+}
+
+/* Clip against the near plane and the four frustum sides.
+ *
+ * The sides are not needed for coverage -- the rasteriser already clamps spans
+ * to the viewport -- they are needed for precision. A wall seen obliquely
+ * throws its far vertices thousands of pixels outside a 120-pixel screen, and
+ * the plane fit through coordinates that large loses most of its significant
+ * bits. Measured against an exact reference, a screen-filling wall was off by
+ * 836 texels on average and 10,026 at worst; clipping first bounds every
+ * projected coordinate to the viewport and brings that to 0.21 and 1.65. That
+ * is the texture swim visible when turning to face a wall at an angle. */
+static unsigned clip_texture_polygon(ClipTextureVertex *ring, unsigned count,
+                                     ClipTextureVertex *scratch, unsigned planes)
+{
+    /* Only the planes the face actually crosses. Clipping against one plane
+     * cannot push a vertex outside another: every vertex it creates lies on a
+     * segment between two existing ones, so it stays inside the convex hull
+     * of a polygon that already satisfied the others. */
+    for (unsigned plane = 0; plane < 5 && count >= 3; ++plane) {
+        if (!(planes & (1u << plane))) continue;
+        count = clip_polygon_plane(ring, count, scratch, plane);
+        for (unsigned i = 0; i < count; ++i) ring[i] = scratch[i];
+    }
+    return count;
 }
 
 /* One reciprocal per vertex, shared by the screen position and by 1/z.
@@ -148,35 +191,43 @@ static HOT void render_textured_faces(void)
         const RuntimeFace *face = &runtime_faces[frame_faces[accepted]];
         if (face->edge_count < 3) continue;
         FaceTexture face_texture_info = face_texture(face);
-        unsigned count = minimum(face->edge_count, 32);
+        unsigned count = minimum(face->edge_count, CLIP_RING_MAX - 8);
         /* Resolve the vertex ring once. surfedge -> edge -> vertex is three
          * dependent loads across ROM and EWRAM, and the ring is walked twice
          * on the clipped path. */
-        uint16_t ring[32];
-        int32_t behind = 0;
-        TextureVertex projected[33];
+        uint16_t ring[CLIP_RING_MAX];
+        unsigned planes = 0;
+        TextureVertex projected[CLIP_RING_MAX];
         for (unsigned i = 0; i < count; ++i) {
             unsigned vertex = bsp_face_vertices[face->first_vertex + i];
             ring[i] = (uint16_t)vertex;
-            /* OR accumulates the sign bit, so this is negative if ANY
-             * vertex is nearer than the near plane. */
-            behind |= camera_cache[vertex].depth - NEAR_PLANE_Q8;
-            /* Projected unconditionally. Four faces in 122 turn out to need
-             * clipping and redo this below; paying for those is cheaper than
-             * walking the ring a second time for the other 118. */
+            /* Note which clip planes this face crosses. The near plane is
+             * needed for coverage; the four sides are needed for precision,
+             * because a vertex projecting far outside the viewport costs the
+             * plane fit most of its significant bits. */
+            if (camera_cache[vertex].depth < NEAR_PLANE_Q8) planes |= 1u;
+            /* Projected unconditionally; faces that turn out to need clipping
+             * redo it below, and that is cheaper than walking the ring twice
+             * for the ones that do not. */
             project_ring_vertex(vertex, &face_texture_info, &projected[i]);
+            if (projected[i].xq8 > Q8_FROM_INT(SCREEN_WIDTH)) planes |= 2u;
+            if (projected[i].xq8 < 0) planes |= 4u;
+            if (projected[i].yq8 > Q8_FROM_INT(SCREEN_HEIGHT)) planes |= 8u;
+            if (projected[i].yq8 < 0) planes |= 16u;
         }
-        if (behind < 0) {
-            /* Near clipping needed. Materialise the clip ring, which is the
-             * only reason the intermediate array exists. */
+        /* A vertex behind the near plane has a meaningless projection, so its
+         * side-plane flags cannot be trusted, and near clipping can move the
+         * polygon far off screen anyway. Clip such faces against everything. */
+        if (planes & 1u) planes = 31u;
+        if (planes) {
             COUNT(near_clipped_faces, 1);
-            ClipTextureVertex unclipped[32], clipped[33];
+            ClipTextureVertex polygon[CLIP_RING_MAX], scratch[CLIP_RING_MAX];
             for (unsigned i = 0; i < count; ++i)
-                unclipped[i] = clip_texture_vertex(ring[i], &face_texture_info);
-            count = clip_texture_polygon_near(unclipped, count, clipped);
+                polygon[i] = clip_texture_vertex(ring[i], &face_texture_info);
+            count = clip_texture_polygon(polygon, count, scratch, planes);
             if (count < 3) continue;
             for (unsigned i = 0; i < count; ++i)
-                projected[i] = project_texture_vertex(&clipped[i]);
+                projected[i] = project_texture_vertex(&polygon[i]);
         }
 #ifdef BSP_TEXTURED_NO_POLYGON
         degenerate_face_count += (uint16_t)(projected[0].x + projected[0].u_over_depth);
