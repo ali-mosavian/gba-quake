@@ -350,8 +350,12 @@ def build_output(face_buffer, u_buffer, v_buffer, depth_buffer, faces, planes,
     dropped_textures = []
     for t, (eu, ev, coverage) in sorted(used.items(), key=lambda kv: -kv[1][2]):
         base, w, h = textures[t]
-        rep_u = min(8, int(eu // w) + 2)
-        rep_v = min(8, int(ev // h) + 2)
+        # One extra period per axis beyond the measured walk extent: a span
+        # issued late keeps its predecessor's walk for a few pixels, and that
+        # walk must still land on texture, not on transparent cells past the
+        # block. Replication costs map entries only, never tiles.
+        rep_u = min(10, int(eu // w) + 3)
+        rep_v = min(10, int(ev // h) + 3)
         bw, bh = w * rep_u, h * rep_v
         if cursor_x + bw > ATLAS:
             cursor_x, cursor_y = 0, cursor_y + row_height

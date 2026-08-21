@@ -36,7 +36,11 @@
 .equ DMA0_BASE,          0x040000b0
 .equ DMA_TIMER_KICK,     0xa7400001
 .equ HBLANK_CYCLES,      272
-.equ TAIL_OVERHEAD,      40
+/* Calibrated against the per-command trace: with 40 the median issue landed
+ * +42 cycles after its deadline, which on hardware showed as ~10 screen
+ * pixels of the previous span's walk -- transparent atlas cells, black
+ * lead-ins -- at the start of every span. */
+.equ TAIL_OVERHEAD,      82
 .equ SLED_SLOTS,         64
 .equ DISPSTAT_HBLANK,    0x02
 
