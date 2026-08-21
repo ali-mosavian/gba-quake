@@ -156,9 +156,7 @@ static HOT void render_textured_faces(void)
         int32_t behind = 0;
         TextureVertex projected[33];
         for (unsigned i = 0; i < count; ++i) {
-            int directed = bsp_surfedges[face->first_edge + i];
-            MapEdge edge = runtime_edges[absolute(directed)];
-            unsigned vertex = directed >= 0 ? edge.first : edge.second;
+            unsigned vertex = bsp_face_vertices[face->first_vertex + i];
             ring[i] = (uint16_t)vertex;
             /* OR accumulates the sign bit, so this is negative if ANY
              * vertex is nearer than the near plane. */

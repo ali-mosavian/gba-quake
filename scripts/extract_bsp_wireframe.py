@@ -101,6 +101,14 @@ def extract(input_path, output_path, pak_path=None):
         v = (a[4] * wx + a[5] * wy + a[6] * wz + a[7]) >> 4
         return u, v
 
+    # Explicit vertex ring per face.
+    #
+    # At runtime a face's vertices are otherwise reached through
+    # surfedge -> edge -> vertex: three dependent loads across ROM and EWRAM,
+    # walked once to build the transform list and again to project. The ring
+    # is fixed at build time, so emit it directly and let the GBA read one
+    # halfword per vertex.
+    face_vertex_ring = []
     face_values = []
     for plane, side, first, count, texture_info, *_ in faces:
         vertex_ids = []
@@ -118,10 +126,16 @@ def extract(input_path, output_path, pak_path=None):
         uv = [runtime_uv_q8(vertices[index], texture_info) for index in set(vertex_ids)]
         u_base = ((min(u for u, _ in uv) >> 8) // width) * width
         v_base = ((min(v for _, v in uv) >> 8) // height) * height
+        ring_start = len(face_vertex_ring)
+        for directed_edge in surfedges[first:first + count]:
+            edge = edges[abs(directed_edge)]
+            face_vertex_ring.append(edge[0] if directed_edge >= 0 else edge[1])
         face_values.append(f"{{{plane}, {side}, {first}, {count}, {texture_info}, {round(center[0])}, "
                            f"{round(center[1])}, {round(center[2])}, {math.ceil(radius)}, "
-                           f"{u_base << 8}, {v_base << 8}}}")
+                           f"{u_base << 8}, {v_base << 8}, {ring_start}}}")
     emit(lines, "static const MapFace bsp_faces[BSP_FACE_COUNT]", face_values, 2)
+    emit(lines, "static const uint16_t bsp_face_vertices[]",
+         [str(v) for v in face_vertex_ring], 16)
     emit(lines, "static const MapTexInfo bsp_texinfo[]",
          ["{{{%d, %d, %d, %d}, {%d, %d, %d, %d}}, %d}" % tuple(
              [round(value * 4096) for value in info[:8]] + [info[8]]) for info in texinfo], 2)

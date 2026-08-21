@@ -50,6 +50,9 @@ typedef struct {
      * size so masking still wraps identically. Absolute world texture
      * coordinates run to thousands of texels and cost u/z its precision. */
     int32_t u_base_q8, v_base_q8;
+    /* Start of this face's vertex ring in bsp_face_vertices[], resolved at
+     * build time so the runtime never walks surfedge -> edge -> vertex. */
+    int32_t first_vertex;
 } MapFace;
 typedef struct { int32_t axis[2][4]; uint16_t texture; } MapTexInfo;
 typedef struct { uint32_t offset; uint16_t width, height; } MapTexture;
@@ -63,6 +66,7 @@ typedef struct {
     int32_t first_edge;
     uint16_t source_face;
     uint8_t edge_count, side;
+    int32_t first_vertex;
 } RuntimeFace;
 typedef struct {
     const uint16_t *indices; uint32_t count; const MapVertex *vertices;

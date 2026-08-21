@@ -90,7 +90,8 @@ cache_faces:
             (int16_t)(flip * plane->nx), (int16_t)(flip * plane->ny),
             (int16_t)(flip * plane->nz), (int16_t)(flip * plane->distance),
             face->center_x, face->center_y, face->center_z, face->radius,
-            face->first_edge, (uint16_t)face_index, face->edge_count, face->side
+            face->first_edge, (uint16_t)face_index, face->edge_count, face->side,
+            face->first_vertex
         };
     }
 }
@@ -184,18 +185,18 @@ static HOT void build_frame_lists(int32_t camera_x, int32_t camera_y,
         frame_faces[accepted_face_count] = (uint16_t)i;
 #endif
         ++accepted_face_count;
+#ifdef BSP_TEXTURED
+        /* The textured path needs only the unique vertex list for the batched
+         * transform, and the ring gives each vertex directly: one ROM halfword
+         * per vertex instead of a surfedge read, an edge read and two appends. */
+        for (unsigned i = 0; i < face->edge_count; ++i)
+            append_vertex(bsp_face_vertices[face->first_vertex + i]);
+#else
         for (unsigned edge_index = 0; edge_index < face->edge_count; ++edge_index) {
             int edge = bsp_surfedges[face->first_edge + edge_index];
-#ifdef BSP_TEXTURED
-            /* The textured path never consumes frame_edges; it needs only the
-             * unique vertex list for the batched transform. */
-            MapEdge entry = runtime_edges[(unsigned)(edge < 0 ? -edge : edge)];
-            append_vertex(entry.first);
-            append_vertex(entry.second);
-#else
             append_edge((unsigned)(edge < 0 ? -edge : edge));
-#endif
         }
+#endif
     }
 }
 
