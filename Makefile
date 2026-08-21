@@ -2,7 +2,7 @@ PROJECT := gba-affine-raster-lab
 BUILD := build
 ASM_OBJECTS := $(BUILD)/r_math_arm.o $(BUILD)/d_frame_arm.o \
 	$(BUILD)/r_bsp_arm.o $(BUILD)/r_affine_arm.o
-TESTS := bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
+TESTS := bsp_textured_nolight bsp_textured_noclip bsp_textured_noback bsp_textured_nopvs bsp_textured_nofrustum bsp_textured_nopoly bsp_textured_nograd bsp_textured_nowalkers bsp_textured_nofetch bsp_textured_norows bsp_textured_nospans bsp_textured_walk bsp_textured_cref baseline pa_pc xy combined32 stream32 window cube cube_affine cube_dynamic cube_wireframe bsp_wireframe bsp_textured bsp_textured_solid bsp_textured_nocoverage cube_software quad_reference quad_affine quad_affine_static quad_affine_staged
 DKP_IMAGE ?= devkitpro/devkitarm:latest
 
 DEVKITARM ?= /opt/devkitpro/devkitARM
@@ -58,9 +58,26 @@ BSP_PAK ?= /Users/alim/Downloads/Quake/id1/pak0.pak
 # doubles, so level 1 is already finer than the screen resolves. Level 0 is
 # indistinguishable here and costs 132KB of ROM and a 32KB working set.
 BSP_MIP ?= 1
-src/generated/bsp_wireframe_map.h: scripts/extract_bsp_wireframe.py
+# World units per lightmap luxel. dm1 as shipped is baked at 4, which is 16x
+# more data than a 120x80 screen can resolve; 16 is what stock Quake used and
+# what the extractor box-filters down to.
+BSP_LMSCALE ?= 16
+# Exposure, in percent. 100 renders the bake as authored.
+BSP_LMGAIN ?= 100
+# The generated header depends on the settings as much as on the scripts, and
+# make cannot see a variable change. Stamp them into a file that is rewritten
+# only when they actually differ, so changing BSP_MIP or BSP_LMGAIN on the
+# command line rebuilds the map and leaving them alone does not.
+BSP_SETTINGS := map=$(BSP_MAP) mip=$(BSP_MIP) lmscale=$(BSP_LMSCALE) lmgain=$(BSP_LMGAIN)
+.PHONY: FORCE
+FORCE:
+src/generated/.bsp_settings: FORCE
+	@mkdir -p src/generated
+	@echo '$(BSP_SETTINGS)' | cmp -s - $@ || echo '$(BSP_SETTINGS)' > $@
+
+src/generated/bsp_wireframe_map.h: scripts/extract_bsp_wireframe.py scripts/bsp_lightmap.py scripts/quake_palette.py src/generated/.bsp_settings
 	mkdir -p src/generated
-	python3 $< $(BSP_MAP) $@ $(BSP_PAK) --mip=$(BSP_MIP)
+	python3 $< $(BSP_MAP) $@ $(BSP_PAK) --mip=$(BSP_MIP) --lmscale=$(BSP_LMSCALE) --lmgain=$(BSP_LMGAIN)
 
 $(BUILD)/bsp_wireframe.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -c $< -o $@
@@ -100,6 +117,9 @@ $(BUILD)/bsp_textured_nowalkers.o: src/quake/r_unity.c src/quake/r_state.c src/q
 
 $(BUILD)/bsp_textured_nofetch.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_TEXTURED_NO_FETCH=1 -c $< -o $@
+
+$(BUILD)/bsp_textured_nolight.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
+	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_AUTO_WALK=1 -DBSP_PROFILE_COUNTS=1 -DBSP_TEXTURED_NO_LIGHT=1 -c $< -o $@
 
 $(BUILD)/bsp_textured_cref.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -DBSP_TEXTURED=1 -DBSP_TEXTURED_C_REFERENCE=1 -DBSP_PROFILE_COUNTS=1 -c $< -o $@

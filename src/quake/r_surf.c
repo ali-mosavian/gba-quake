@@ -239,7 +239,8 @@ static HOT void render_textured_faces(void)
         uint16_t texture = face_texture_info.texture;
 #if defined(BSP_TEXTURED_SOLID) || defined(BSP_TEXTURED_NO_COVERAGE) || \
     defined(BSP_TEXTURED_C_REFERENCE)
-        draw_textured_polygon_reference(projected, count, texture);
+        draw_textured_polygon_reference(projected, count, texture,
+                                        &bsp_face_lights[face->source_face]);
 #else
         draw_textured_polygon_arm(projected, count, texture);
 #endif

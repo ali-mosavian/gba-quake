@@ -296,7 +296,8 @@ static int polygon_scanline(TextureEdgeWalker *walkers,
 static __attribute__((used, noinline, section(REFERENCE_POLYGON_SECTION)))
 void draw_textured_polygon_reference(
                                       const TextureVertex *vertices,
-                                      unsigned vertex_count, uint16_t texture_index)
+                                      unsigned vertex_count, uint16_t texture_index,
+                                      const MapFaceLight *face_light)
 {
     /* Fit through the widest-spread triple rather than the first non-degenerate
      * one. A long thin Quake face can present three nearly collinear leading
@@ -323,6 +324,10 @@ void draw_textured_polygon_reference(
         }
     }
     if (!b) return;
+#if defined(BSP_TEXTURED_SOLID) || defined(BSP_TEXTURED_NO_FETCH) || \
+    defined(BSP_TEXTURED_NO_LIGHT)
+    (void)face_light;
+#endif
     /* The winner's determinant, once, at full Q8 precision for the fit. */
     int64_t determinant = (int64_t)(b->xq8 - a->xq8) * (c->yq8 - a->yq8) -
                           (int64_t)(c->xq8 - a->xq8) * (b->yq8 - a->yq8);
@@ -342,6 +347,12 @@ void draw_textured_polygon_reference(
     const unsigned texture_width = texture->width;
     const unsigned u_mask = texture_width - 1;
     const unsigned v_mask = texture->height - 1;
+#ifndef BSP_TEXTURED_NO_LIGHT
+    /* Hoisted for the same reason the texture width is: these are ROM reads
+     * through a pointer, and the segment loop below would repeat them. */
+    const int32_t luxel_base = face_light->base;
+    const int32_t luxel_width = face_light->width;
+#endif
     /* Row offset without a multiply.
      *
      * Borrowed from the mgl 8-bit affine span filler, which keeps the v
@@ -525,6 +536,45 @@ void draw_textured_polygon_reference(
             int v1 = texel_from_planes(voz1, inv1);
             int du = divide_short_span(u1 - u, (unsigned)segment_pixels);
             int dv = divide_short_span(v1 - v, (unsigned)segment_pixels);
+#if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH) && \
+    !defined(BSP_TEXTURED_NO_LIGHT)
+            /* One luxel for the whole segment, taken at its midpoint.
+             *
+             * A luxel is 16 world units and a segment is at most 32 screen
+             * pixels, so a segment spans two or three luxels at most, and the
+             * lightmap is smooth at that scale: half of all adjacent luxel
+             * pairs on this map are identical and 95% are within two shade
+             * rows of each other. Interpolating the light per pixel instead
+             * was built and measured, and cost 117,713 cycles a frame against
+             * this version's 67,738 -- nearly twice the price for a difference
+             * the segment-boundary column statistics cannot separate from the
+             * texture's own noise.
+             *
+             * Sampled BEFORE the wrap below: u and v are still absolute texel
+             * coordinates here, and a texture that tiles across the face wraps
+             * them back to the same few texels while the lightmap must keep
+             * running across the whole surface.
+             *
+             * The shift is one past BSP_LUXEL_SHIFT because the two ends are
+             * summed rather than averaged; halving is folded into it.
+             *
+             * No per-axis clamp. Every face vertex is checked at build time
+             * to land at least one luxel inside its block, and a point inside
+             * a segment cannot stray much further: the affine error between
+             * perspective corrections is bounded at 0.86 texels at this mip,
+             * which is a tenth of a luxel. The replicated border covers the
+             * rest. The mask is the only bounds test, and it is there so that
+             * a segment surviving near-plane clipping with a very large 1/z
+             * cannot read past the array -- it wraps instead of clamping
+             * because at that point one segment is already wrong either way,
+             * and wrapping is one instruction. */
+            unsigned luxel_index = (unsigned)(
+                luxel_base + (((v + v1) >> (BSP_LUXEL_SHIFT + 1)) * luxel_width) +
+                             (((u + u1) >> (BSP_LUXEL_SHIFT + 1))));
+            const uint8_t *const shade_row =
+                shade_table +
+                ((unsigned)bsp_lightmap_luxels[luxel_index & BSP_LUXEL_MASK] << 8);
+#endif
 #if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH)
             /* Nearest texel, with Hecker's direction-stable tie break.
              *
@@ -560,12 +610,20 @@ void draw_textured_polygon_reference(
  * the two masks, the row multiply and the texture load with something cheap.
  * The gap to the real build is the address-computation-plus-fetch budget. */
 #define TEXEL() ((uint32_t)((u ^ v) >> 8) & 255u)
-#else
+#elif defined(BSP_TEXTURED_NO_LIGHT)
 /* v is pre-scaled by log2(width), so this is one masked shift per axis plus an
  * add - no row multiply. */
 #define TEXEL() ((uint32_t)texture_pixels[ \
                     (((unsigned)(v >> 8)) & row_mask) + \
                     (((unsigned)(u >> 8)) & u_mask)])
+#else
+/* v is pre-scaled by log2(width), so the texel is one masked shift per axis
+ * plus an add - no row multiply. The shade lookup that follows turns that
+ * texel into the palette index it takes at this segment's light level, and
+ * costs exactly one more byte load: the row pointer is a loop invariant. */
+#define TEXEL() ((uint32_t)shade_row[texture_pixels[ \
+                    (((unsigned)(v >> 8)) & row_mask) + \
+                    (((unsigned)(u >> 8)) & u_mask)]])
 #endif
 /* Texels are fetched one at a time and cannot be batched: u and v step
  * independently, so consecutive pixels are never adjacent in the texture.
@@ -647,7 +705,7 @@ void draw_textured_polygon_reference(
                         COUNT(texel_sample_count, 1);
                         row[x] = (uint8_t)TEXEL();
                     }
-                    u += du; v += dv;
+                    SHIFT_ONE();
                 }
                 *coverage_word = covered;
             }

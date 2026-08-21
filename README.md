@@ -769,6 +769,123 @@ The pattern across these: the remaining BSP indirections are per-face, and at
 120 drawn faces a frame that is already cheap. The one that mattered was per
 vertex.
 
+### Lightmaps
+
+Pre-baked at extract time, applied per drawing segment. **+93K cycles (+4.7%)**
+at the spawn: 1,965,903 -> 2,058,929, 8.54 -> 8.15 FPS. ROM 549,776 ->
+758,596; EWRAM 204,680 -> 221,064 of 262,144; IWRAM +264 bytes of drawer code.
+`bsp_textured_nolight` is the same build with `-DBSP_TEXTURED_NO_LIGHT=1`, for
+the A/B.
+
+The map this repo builds from is **not** stock Quake lighting, and reading it
+as though it were produces plausible bytes and wrong light. Its worldspawn
+carries `"_lmscale" "4"` and `"_lm_border" "1"`: luxels are 4 world units, not
+16, every face's block has a one-luxel bleed ring, and softquake's light tool
+writes an unlit surface as byte 96 with 128 as the neutral point, so the bytes
+are bipolar rather than a 0..255 darkening factor. The vanilla `extents/16 + 1`
+reader claims 68,574 bytes of an 888,849-byte lump and never notices, because
+every block it reads is in bounds -- it just belongs to a different face. The
+check that catches it is structural: walk the faces in `lightofs` order,
+predict `w * h * numstyles` rounded up to 4 bytes, and see whether the walk
+ends exactly at the lump size. It does, at scale 4 with a border of 1.
+
+What the extractor emits:
+
+- **Style layers resolved to style 0.** Layer *m* belongs to `styles[m]`, and
+  `styles[m]` is not *m*: 30 of dm1's 46 multi-layer faces store the animated
+  style 2 first and the static style 0 second. Taking layer 0 blindly renders
+  those faces from a strobe frozen at an arbitrary phase.
+- **Box-filtered from 4 units to 16**, which is what stock Quake shipped and is
+  already finer per screen pixel at 120x80 than 16 units was at 320x200.
+  126,303 luxel bytes, padded to 131,072.
+- **Merged faces re-stitched.** The coplanar merge above drops the absorbed
+  faces' lightmaps and keeps the survivor's, whose rectangle covers a fraction
+  of the polygon now being drawn -- 198 of 2,005 survivors end up with geometry
+  outside their own block, up to 34.5 luxels past its edge. Merging requires
+  identical texinfo, so the merged faces share one texture-space
+  parameterisation and their grids are subgrids of the same lattice: each
+  source block is pasted into the union rectangle at an exact integer offset,
+  interior luxels winning over a neighbour's extrapolated border, and the cells
+  no block covered are flooded from the ones that were.
+- **The shade row, not the luxel.** The row is the luxel's top six bits and
+  nothing at runtime wants the other two.
+- **A replicated one-luxel border** around every block, so the rasteriser needs
+  no clamp. Costs 55KB of ROM; the clamp it replaces was measured at 39.7K
+  cycles a frame, because a two-sided clamp on each axis is what pushes the
+  compiler into spilling the segment tail.
+- **The colormap**, 64 rows of 256, built by scaling each palette entry and
+  snapping to the nearest palette index. The neutral row is written as the
+  identity rather than searched: nearest-RGB is only self-inverse for 213 of
+  the 256 entries, so an unlit wall would otherwise come out recoloured.
+  Palette indices 224-255 are Quake's fullbrights and map to themselves in
+  every row -- and are excluded as match targets, or a darkened brown lands on
+  a bright fire colour that happens to be closest in RGB.
+
+At runtime the address is one shift and one lookup. The luxel grid is defined
+in the texinfo's own units -- the mip-0 texel grid -- while `u` and `v` arrive
+in the loaded mip level's units with the face's texture origin subtracted.
+Both differences are whole luxels (the origin is a multiple of the texture
+width, which at this mip is a multiple of a luxel), so the shift distributes
+over them and all three offsets collapse into the face's base index:
+
+```c
+luxel = base + ((v + v1) >> (BSP_LUXEL_SHIFT + 1)) * width
+             + ((u + u1) >> (BSP_LUXEL_SHIFT + 1));
+shade_row = shade_table + (bsp_lightmap_luxels[luxel & BSP_LUXEL_MASK] << 8);
+```
+
+Sampled once per perspective segment, at its midpoint, before `u` and `v` are
+wrapped to the texture -- the texture tiles across a face, the lightmap must
+not. `BSP_LUXEL_SHIFT + 1` folds the halving of the two-ended sum into the
+shift. The mask is the only bounds test: every face vertex is checked at build
+time to land a luxel inside its block, and the affine error between
+perspective corrections is 0.86 texels, a tenth of a luxel, so the border
+covers everything short of a near-plane segment with a pathological 1/z --
+where wrapping is as good an answer as clamping and costs one instruction.
+
+The pixel loop grows by exactly one instruction, and the shade row stays a
+loop invariant in a register:
+
+```asm
+and  lr, r6, r2, asr #8       @ row offset, v pre-scaled + shifted mask
+and  r5, sl, ip, asr #8       @ column
+add  lr, r9, lr               @ texture base + row
+ldrb lr, [lr, r5]             @ texel
+ldrb lr, [r4, lr]             @ shade_row[texel]
+strb lr, [r0], #1             @ pixel
+add  r2, r2, r3 / add ip, ip, r1
+```
+
+The colormap is the one per-texel table and lives in EWRAM (16KB, copied from
+ROM at boot); the luxels are per-segment and stay in ROM. Quake's own
+architecture -- apply the colormap once per cached surface texel -- does not
+port: texture times lightmap over dm1's faces at mip 1 is 2.6MB.
+
+Measured and reverted:
+
+- **Interpolating the light per pixel** rather than holding it constant across
+  a segment: **117,713 cycles against 67,738** for the constant version at the
+  same pose, nearly twice the price. A luxel is 16 world units and a segment
+  is at most 32 screen pixels, so a segment spans two or three luxels; half of
+  all adjacent luxel pairs on this map are identical and 95% are within two
+  shade rows, which is below what the texture's own texel-to-texel noise
+  contributes.
+- **A compare-and-branch bounds test** on the luxel index instead of the mask:
+  **+30K**. Padding the luxel array to a power of two costs 4,769 bytes of ROM
+  and turns the test into one AND.
+
+The map source, luxel scale and exposure are Makefile variables: `BSP_LMSCALE`
+(default 16) and `BSP_LMGAIN` (percent, default 100). dm1's bake centres on
+0.75x, so the map renders at about two thirds of raw texture brightness --
+faithful to how softquake shows it, dim on a handheld. The gain scales every
+row of the colormap and costs nothing at runtime.
+
+`scripts/preview_lightmaps.py` renders faces unlit next to lit, straight out
+of the generated header and with the runtime's own integer expression. There
+is no way to check a lightmap by reading the numbers: an origin one luxel out,
+a block one column too wide, a colour snapped to the wrong ramp -- all of them
+produce plausible bytes.
+
 ### What 30 FPS would take
 
 The 30 FPS budget is 559K cycles. The stages outside rendering already cost

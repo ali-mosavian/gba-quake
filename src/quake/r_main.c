@@ -88,6 +88,10 @@ int main(void)
     for (unsigned texture = 0;
          texture < sizeof(bsp_textures) / sizeof(bsp_textures[0]); ++texture)
         texture_cache_offsets[texture] = 0xffff;
+#ifndef BSP_TEXTURED_NO_LIGHT
+    for (unsigned i = 0; i < sizeof(bsp_shade_table) / 4; ++i)
+        ((uint32_t *)shade_table)[i] = ((const uint32_t *)bsp_shade_table)[i];
+#endif
 #endif
     for (unsigned color = 0; color < 256; ++color) BG_PALETTE[color] = bsp_palette[color];
 #else

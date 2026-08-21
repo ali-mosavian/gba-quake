@@ -79,6 +79,18 @@ typedef struct {
  * player traces through it as a single point. Negative children are contents,
  * not node indices. */
 typedef struct { int32_t plane; int16_t children[2]; } MapClipNode;
+/* One face's lightmap: where its luxels start, how the grid is shaped, and
+ * the constant that turns an interpolated texel coordinate into a luxel index.
+ * Kept out of MapFace because the culling pass sweeps every face record and
+ * has no use for any of this. */
+typedef struct {
+    /* Index into bsp_lightmap_luxels[] of the luxel a zero texel coordinate
+     * lands on. The block's own offset, the face's texture origin and the
+     * luxel grid's origin are all whole luxels, so all three collapse into
+     * this one number and the rasteriser adds nothing to u and v. */
+    int32_t base;
+    uint16_t width;               /* luxels per row, including the border */
+} MapFaceLight;
 typedef struct { int32_t axis[2][4]; uint16_t texture; } MapTexInfo;
 typedef struct { uint32_t offset; uint16_t width, height; } MapTexture;
 typedef struct { int16_t contents; int32_t visibility; uint16_t first_mark, mark_count; } MapLeaf;
@@ -146,6 +158,15 @@ EWRAM static uint8_t texture_cache[TEXTURE_CACHE_BYTES];
 EWRAM static uint16_t texture_cache_offsets[
     sizeof(bsp_textures) / sizeof(bsp_textures[0])];
 static uint16_t texture_cache_used;
+#ifndef BSP_TEXTURED_NO_LIGHT
+/* The shade table is read once per pixel at a column the texture picks, so the
+ * access is scattered and never sequential -- exactly the pattern the ROM
+ * prefetcher cannot help with, at five cycles a byte. Copied to EWRAM once at
+ * startup it costs two, for 16.5KB of the 56KB that was still free. IWRAM
+ * would cost one, but the whole table does not fit beside the framebuffer,
+ * the coverage bitmap and the stack, and half a table is no table. */
+EWRAM static uint8_t shade_table[sizeof(bsp_shade_table)];
+#endif
 #endif
 #endif
 EWRAM static uint16_t face_stamp[BSP_FACE_COUNT];

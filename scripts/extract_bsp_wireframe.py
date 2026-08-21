@@ -3,6 +3,9 @@
 import collections
 import math, pathlib, re, struct, sys
 
+import bsp_lightmap
+import quake_palette
+
 ENTITIES, PLANES, TEXTURES, VERTICES, VISIBILITY = 0, 1, 2, 3, 4
 NODES, TEXINFO, FACES, LEAVES, MARKSURFACES, EDGES, SURFEDGES = 5, 6, 7, 10, 11, 12, 13
 CLIPNODES, MODELS = 9, 14
@@ -149,10 +152,19 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks):
         new_marks.extend(seen)
         new_leaves.append(leaf[:8] + (start, len(seen)) + leaf[10:])
 
-    return new_faces, new_rings, new_nodes, new_leaves, new_marks, len(absorbed)
+    return (new_faces, new_rings, new_nodes, new_leaves, new_marks,
+            len(absorbed), face_map)
 
 
-def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
+# The shade table is Quake's colormap: one row per light level, 256 entries
+# per row. 64 rows is what Quake itself used and costs 16KB of ROM; the row is
+# just the top six bits of the luxel, so the runtime needs no lookup to find it.
+SHADE_ROWS = 64
+SHADE_SHIFT = 2
+
+
+def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
+            lmscale=16, lmgain=100):
     data = pathlib.Path(input_path).read_bytes()
     if struct.unpack_from("<i", data)[0] != 29: raise ValueError("expected Quake BSP v29")
     lumps = [struct.unpack_from("<ii", data, 4 + i * 8) for i in range(15)]
@@ -199,12 +211,16 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
             source_y = y % height
             for x in range(stored_width):
                 texture_pixels.append(pixels[source_y * width + (x % width)])
+    palette_rgb = None
     if pak_path:
-        palette_rgb = pak_entry(pak_path, "gfx/palette.lmp")
-        palette = [(palette_rgb[i] >> 3) | ((palette_rgb[i+1] >> 3) << 5) |
-                   ((palette_rgb[i+2] >> 3) << 10) for i in range(0, 768, 3)]
-    else:
-        palette = [((i >> 3) * 0x421) for i in range(256)]
+        try:
+            palette_rgb = pak_entry(pak_path, "gfx/palette.lmp")
+        except (OSError, ValueError) as error:
+            print(f"  pak unavailable ({error}); using the bundled palette")
+    if palette_rgb is None:
+        palette_rgb = quake_palette.QUAKE_PALETTE
+    palette = [(palette_rgb[i] >> 3) | ((palette_rgb[i+1] >> 3) << 5) |
+               ((palette_rgb[i+2] >> 3) << 10) for i in range(0, 768, 3)]
     # Explicit vertex ring per face.
     #
     # At runtime a face's vertices are otherwise reached through
@@ -224,8 +240,20 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
         n = planes[plane][:3]
         normals.append(tuple(-c for c in n) if side else n)
 
+    # Lightmaps are addressed by the ORIGINAL face list, so decode them before
+    # merging rewrites it, and keep the map from old face to new.
+    source_lightmaps, light_info = bsp_lightmap.read_lightmaps(
+        data, lumps, vertices, edges, surfedges, texinfo, faces)
+    print(f"  lightmaps: {light_info['lit_faces']} lit faces, "
+          f"{light_info['lump_bytes']} bytes at {light_info['scale']} units/luxel, "
+          f"border {light_info['border']}, "
+          f"{'bipolar' if light_info['bipolar'] else 'vanilla'}, "
+          f"{light_info['tiling_gaps']} tiling gaps, "
+          f"{light_info['animated_faces']} faces with animated styles "
+          f"({light_info['styles_out_of_order']} storing style 0 second)")
+    face_map = list(range(len(faces)))
     if merge:
-        faces, rings, nodes, leaves, marks, absorbed = merge_coplanar_faces(
+        faces, rings, nodes, leaves, marks, absorbed, face_map = merge_coplanar_faces(
             faces, rings, normals, vertices, nodes, leaves, marks)
         print(f"  merged {absorbed} coplanar faces away "
               f"({100.0 * absorbed / (len(faces) + absorbed):.1f}%), "
@@ -237,7 +265,10 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
               ("PLANE", planes), ("NODE", nodes), ("FACE", faces),
               ("LEAF", leaves), ("MARKSURFACE", marks)]
     lines += [f"    BSP_{name}_COUNT = {len(values)}," for name, values in counts]
-    lines += [f"    BSP_CLIPNODE_COUNT = {len(clipnodes)},",
+    lines += [f"    BSP_LUXEL_SHIFT = {8 + (lmscale.bit_length() - 1) - mip},",
+              f"    BSP_SHADE_ROWS = {SHADE_ROWS},",
+              f"    BSP_SHADE_SHIFT = {SHADE_SHIFT},",
+              f"    BSP_CLIPNODE_COUNT = {len(clipnodes)},",
               f"    BSP_PLAYER_HULL_HEAD = {models[0][10]},",
               f"    BSP_VISIBILITY_BYTES = {len(visibility)},",
               f"    BSP_SPAWN_X = {round(spawn[0])}, BSP_SPAWN_Y = {round(spawn[1])},",
@@ -270,6 +301,36 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
         v = (a[4] * wx + a[5] * wy + a[6] * wz + a[7]) >> 4
         return u, v
 
+    # Lightmaps, re-baked onto a coarser grid and re-addressed into the same
+    # per-face texture space the rasteriser already interpolates.
+    #
+    # The luxel grid is defined in the texinfo's own units -- the mip-0 texel
+    # grid -- but u and v arrive at the rasteriser in the loaded mip level's
+    # units and with this face's texture origin already subtracted. Both of
+    # those are constant per face, so the whole conversion collapses to one add
+    # and one shift: luxel = (u + bias) >> BSP_LUXEL_SHIFT.
+    luxel_shift = 8 + (lmscale.bit_length() - 1) - mip
+    face_sources = collections.defaultdict(list)
+    for old_face, new_face in enumerate(face_map):
+        face_sources[new_face].append(old_face)
+    neutral_byte = 128 if light_info["bipolar"] else 255
+    unlit = bsp_lightmap.add_border(
+        bsp_lightmap.FaceLightmap(1, 1, bytes([neutral_byte]), 0, 0, lmscale, []))
+    luxel_bytes = bytearray()
+    luxel_cache = {}
+    light_values = []
+    luxels_out_of_range = 0
+
+    def face_lightmap(new_face):
+        """One face's luxels, whether it is one BSP face or several merged."""
+        parts = [source_lightmaps[i] for i in face_sources[new_face]
+                 if source_lightmaps[i]]
+        if not parts:
+            return unlit
+        block = (parts[0] if len(parts) == 1
+                 else bsp_lightmap.paste_blocks(parts, light_info["scale"]))
+        return bsp_lightmap.add_border(bsp_lightmap.resample(block, lmscale))
+
     face_vertex_ring = []
     face_values = []
     for face_index, (plane, side, first, count, texture_info, *_) in enumerate(faces):
@@ -291,7 +352,73 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0):
         face_values.append(f"{{{plane}, {side}, {first}, {len(ring)}, {texture_info}, {round(center[0])}, "
                            f"{round(center[1])}, {round(center[2])}, {math.ceil(radius)}, "
                            f"{u_base << 8}, {v_base << 8}, {ring_start}}}")
+
+        block = face_lightmap(face_index)
+        # Store the shade row, not the luxel. The row is the top six bits of
+        # the luxel and nothing at runtime wants the other two, so doing the
+        # shift here saves an instruction per segment and lets the table be
+        # indexed by a plain byte.
+        rows = bytes(value >> SHADE_SHIFT for value in block.luxels)
+        key = (block.width, rows)
+        if key not in luxel_cache:
+            luxel_cache[key] = len(luxel_bytes)
+            luxel_bytes.extend(rows)
+        # Fold the whole address into one offset.
+        #
+        # The rasteriser's u is the absolute texel coordinate minus u_base, and
+        # the luxel grid starts at grid_min. Both offsets are whole luxels --
+        # u_base is a multiple of the texture width, which at this mip is a
+        # multiple of a luxel, and grid_min is in luxels by construction -- so
+        # the shift distributes over them and they collapse into the array
+        # index rather than being added to u at runtime.
+        offset_u = (u_base << 8) - (block.grid_min_s << luxel_shift)
+        offset_v = (v_base << 8) - (block.grid_min_t << luxel_shift)
+        if offset_u % (1 << luxel_shift) or offset_v % (1 << luxel_shift):
+            raise ValueError(
+                f"face {face_index}: texture origin is not a whole luxel "
+                f"({offset_u}, {offset_v} at 1<<{luxel_shift}); the runtime "
+                "folds it into the array index and cannot carry a remainder")
+        base = (luxel_cache[key] + (offset_v >> luxel_shift) * block.width +
+                (offset_u >> luxel_shift))
+        light_values.append(f"{{{base}, {block.width}}}")
+        # Check the runtime expression, not the derivation behind it: every
+        # vertex of the face must land on the block's interior, leaving the
+        # replicated border for the rounding. An origin one luxel out still
+        # renders -- it renders the neighbouring luxel, and the seam shows up
+        # as a faint band along one edge of one wall.
+        if block is not unlit:
+            for index in ring:
+                u, v = runtime_uv_q8(vertices[index], texture_info)
+                x = ((u - (u_base << 8)) >> luxel_shift) + (offset_u >> luxel_shift)
+                y = ((v - (v_base << 8)) >> luxel_shift) + (offset_v >> luxel_shift)
+                if not (1 <= x < block.width - 1 and 1 <= y < block.height - 1):
+                    luxels_out_of_range += 1
     emit(lines, "static const MapFace bsp_faces[BSP_FACE_COUNT]", face_values, 2)
+    print(f"  lightmap grid: {lmscale} units/luxel, {len(luxel_bytes)} luxel bytes "
+          f"({len(luxel_cache)} distinct blocks), shift {luxel_shift}, "
+          f"{luxels_out_of_range} vertices outside their block")
+    emit(lines, "static const MapFaceLight bsp_face_lights[BSP_FACE_COUNT]",
+         light_values, 2)
+    # Padded to a power of two so the rasteriser's bounds test is one AND
+    # rather than a compare and a branch. The test is there for safety, not
+    # accuracy -- a segment that survives near-plane clipping with a very
+    # large 1/z can produce an index far outside its own face -- so wrapping
+    # is as good an answer as clamping, and it costs one instruction.
+    padded = 1 << (len(luxel_bytes) - 1).bit_length()
+    lines.append(f"#define BSP_LUXEL_MASK 0x{padded - 1:x}u")
+    luxel_bytes.extend(bytes(padded - len(luxel_bytes)))
+    emit(lines, "static const uint8_t bsp_lightmap_luxels[]",
+         [str(x) for x in luxel_bytes], 24)
+    # An overall exposure, applied to the table so it costs nothing at
+    # runtime. dm1's bake centres on 0.75x -- softquake's light tool writes an
+    # unlit surface as byte 96, not 128 -- so the map renders at about two
+    # thirds of the raw texture brightness, which is faithful but dim on a
+    # handheld. --lmgain scales every row.
+    shade = bsp_lightmap.build_shade_table(
+        palette_rgb, rows=SHADE_ROWS,
+        neutral_row=(neutral_byte >> SHADE_SHIFT), gain=lmgain / 100.0)
+    emit(lines, "static const uint8_t bsp_shade_table[BSP_SHADE_ROWS * 256]"
+                " __attribute__((aligned(4)))", [str(x) for x in shade], 24)
     emit(lines, "static const uint16_t bsp_face_vertices[]",
          [str(v) for v in face_vertex_ring], 16)
     # Axes scaled by the mip factor so u and v come out in the stored level's
@@ -317,4 +444,8 @@ if __name__ == "__main__":
     extract(sys.argv[1], sys.argv[2],
             sys.argv[3] if len(sys.argv) > 3 else None,
             merge="--no-merge" not in sys.argv,
-            mip=next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--mip=")), 0))
+            mip=next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--mip=")), 0),
+            lmscale=next((int(a.split("=")[1]) for a in sys.argv
+                          if a.startswith("--lmscale=")), 16),
+            lmgain=next((int(a.split("=")[1]) for a in sys.argv
+                         if a.startswith("--lmgain=")), 100))
