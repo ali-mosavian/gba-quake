@@ -548,13 +548,13 @@ progressively remove stages so the cost ladder can be attributed.
 At the `dm1` spawn, with the corrected texturing:
 
 ```text
-total                    1,009,646 cycles     16.62 FPS
+total                      983,268 cycles     17.07 FPS
   clear                        3,970     0.4%
   BSP/PVS rebuild              5,876     0.6%
-  face culling                66,242     6.6%
-  vertex transform            69,681     6.9%
-  textured rendering         805,700    79.8%
-  2x expansion                58,131     5.8%
+  face culling                60,925     6.2%
+  vertex transform            65,872     6.7%
+  textured rendering         788,470    80.2%
+  2x expansion                58,131     5.9%
 ```
 
 The work counters explain the shape of that number:
@@ -711,16 +711,48 @@ Measured and reverted:
   is the third restructuring of the row loop to lose, after the active-edge
   sweep; the tiny-face workload is the reason every time.
 
-### Offline face merging
+### Offline preparation
 
-`scripts/` does not do this, but it was measured. Merging edge-adjacent
-coplanar same-texture faces has an upper bound of **53.9%** fewer faces on
-dm1. Requiring the merged polygon to stay convex -- which the scanline fill
-needs, since it takes min/max x per row -- cuts that to **12.2%** (2,283 ->
-2,005 faces, ring vertices 11,374 -> 9,554). Merged faces would also have to
-be re-referenced from every leaf whose marksurfaces pointed at their parts,
-which can raise the per-leaf candidate count and give some of it back. Worth
-perhaps 30-40K against that complexity; not taken.
+The extractor does more than transcribe the BSP. Each step below was measured
+on the target, and the ones that did not pay were dropped.
+
+- **Explicit per-face vertex rings.** The largest single BSP-side win,
+  **-32.3K**; see above.
+- **Coplanar face merging.** Edge-adjacent faces sharing a plane and texinfo
+  are spliced, with the merge rejected if any joint turns concave -- the
+  scanline fill takes min/max x per row, so it can only draw convex polygons.
+  The unconstrained upper bound is 53.9% fewer faces; convexity cuts that to
+  **12.2%** (2,283 -> 2,005, ring vertices 11,374 -> 9,554). At the spawn:
+  746 -> 668 candidates, 1,044 -> 957 rows, 1,187 -> 1,101 spans, **-25K**.
+  Marksurfaces are remapped and de-duplicated and node face ranges renumbered;
+  faces on one plane share a node, so near-to-far ordering survives.
+- **Texture downsampling to mip 1.** The originals are authored for 320x200
+  against this renderer's 120x80, so level 0 is detail the screen cannot
+  resolve. Costs nothing at runtime -- the texture axes are scaled by the same
+  factor, so u and v arrive in the stored level's units. Texture bytes
+  176,384 -> 44,096, ROM 704,460 -> 549,776, and the spawn working set drops
+  from a full 32KB cache with ROM fallback to 8KB. Frame cost unchanged: both
+  levels are read from the same EWRAM cache, so this buys memory, not speed.
+
+Measured and reverted:
+
+- **Splitting the runtime face record by access pattern**, so culling could
+  stream 16 contiguous bytes instead of striding 28 through records whose
+  other half it never reads: **+4.9K**. The premise was wrong -- the compiler
+  already loads only the fields each pass uses, so there was no striding waste
+  to reclaim, and the split just added a second array base for the accepted
+  faces to chase.
+- **Precomputing log2(width) into the texture record** rather than deriving it
+  with a short loop per face: **+0.8K**. A ROM halfword read costs about what
+  the seven-iteration shift loop did.
+- **Moving the texture cache into IWRAM** for one-cycle texel reads. IWRAM
+  already holds the framebuffer, the coverage bitmap, the hot code and the
+  stack, and the face loop alone takes a 2,352-byte frame; a 10KB cache there
+  starved the stack and the renderer ran away to 78M cycles a frame.
+
+The pattern across these: the remaining BSP indirections are per-face, and at
+120 drawn faces a frame that is already cheap. The one that mattered was per
+vertex.
 
 ### What 30 FPS would take
 
