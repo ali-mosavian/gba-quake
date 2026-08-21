@@ -230,6 +230,16 @@ static __attribute__((unused)) const uint8_t *texture_pixels_for(
 }
 #endif
 
+/* Edge walkers at sub-pixel precision.
+ *
+ * Stepping from the snapped integer vertex made the silhouette jump a whole
+ * pixel at a time, and left coverage disagreeing with the interpolants, which
+ * are sampled at pixel centres. Here a row belongs to an edge when the row's
+ * centre lies within it -- ceil(y - 1/2), the top-left rule -- and the
+ * starting x is pre-stepped from the true edge position to that first centre.
+ *
+ * Frustum clipping is what makes this safe: every coordinate is now bounded to
+ * the viewport, so the Q8 slope and its pre-step stay small and exact. */
 static unsigned build_edge_walkers(const TextureVertex *vertices,
                                    unsigned vertex_count,
                                    TextureEdgeWalker *walkers)
@@ -238,14 +248,17 @@ static unsigned build_edge_walkers(const TextureVertex *vertices,
     for (unsigned edge = 0; edge < vertex_count; ++edge) {
         const TextureVertex *first = &vertices[edge];
         const TextureVertex *second = &vertices[edge + 1 == vertex_count ? 0 : edge + 1];
-        if (first->y == second->y) continue;
-        const TextureVertex *low = first->y < second->y ? first : second;
+        const TextureVertex *low = first->yq8 < second->yq8 ? first : second;
         const TextureVertex *high = low == first ? second : first;
-        walkers[count++] = (TextureEdgeWalker){
-            low->y, high->y, Q8_FROM_INT(low->x),
-            divide_s64_s32(Q8_FROM_INT((int64_t)high->x - low->x),
-                           high->y - low->y)
-        };
+        int32_t height = high->yq8 - low->yq8;
+        if (!height) continue;
+        int first_row = (low->yq8 + 128) >> 8;
+        int last_row = (high->yq8 + 128) >> 8;      /* exclusive */
+        if (first_row >= last_row) continue;
+        int32_t step = divide_s64_s32(((int64_t)(high->xq8 - low->xq8)) << 8, height);
+        int32_t to_centre = (Q8_FROM_INT(first_row) + 128) - low->yq8;
+        int32_t start = low->xq8 + (int32_t)(((int64_t)step * to_centre) >> 8);
+        walkers[count++] = (TextureEdgeWalker){first_row, last_row, start, step};
     }
     return count;
 }
@@ -253,19 +266,22 @@ static unsigned build_edge_walkers(const TextureVertex *vertices,
 static int polygon_scanline(TextureEdgeWalker *walkers,
                             unsigned walker_count, int y, int *left, int *right)
 {
-    int minimum_x = 0, maximum_x = 0, count = 0;
+    int32_t minimum_x = 0, maximum_x = 0;
+    int count = 0;
     for (unsigned edge = 0; edge < walker_count; ++edge) {
         TextureEdgeWalker *walker = &walkers[edge];
         if (y < walker->low_y || y >= walker->high_y) continue;
-        int x = Q8_TO_INT(walker->x_q8);
+        int32_t x = walker->x_q8;
         walker->x_q8 += walker->step_q8;
         if (!count || x < minimum_x) minimum_x = x;
         if (!count || x > maximum_x) maximum_x = x;
         ++count;
     }
     if (count < 2) return 0;
-    *left = minimum_x;
-    *right = maximum_x;
+    /* Same rule across the row: a pixel is covered when its centre falls
+     * inside the span, so the right edge is exclusive. */
+    *left = (minimum_x + 128) >> 8;
+    *right = ((maximum_x + 128) >> 8) - 1;
     if (*left < 0) *left = 0;
     if (*right >= SCREEN_WIDTH) *right = SCREEN_WIDTH - 1;
     return *left <= *right;
