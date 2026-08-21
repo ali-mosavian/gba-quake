@@ -89,7 +89,7 @@ cache_faces:
     }
 }
 
-static CameraPoint to_camera(MapVertex vertex, int32_t camera_x,
+static __attribute__((unused)) CameraPoint to_camera(MapVertex vertex, int32_t camera_x,
                              int32_t camera_y, int32_t camera_z,
                              int sine, int cosine)
 {
@@ -103,29 +103,45 @@ static CameraPoint to_camera(MapVertex vertex, int32_t camera_x,
     return result;
 }
 
+/* Culling runs in whole world units, not Q8.
+ *
+ * Both tests are conservative bounding-sphere rejections whose radius is
+ * already rounded up, so the camera's sub-unit position cannot change the
+ * outcome once the radius carries a unit of slack for the rounding. Working
+ * in integer units keeps every product inside 32 bits -- a Q14 normal is 15
+ * bits against a 13-bit world coordinate -- where the Q8 form needed 15 by 21
+ * and therefore a 64-bit multiply on every term.
+ *
+ * The camera is ROUNDED to the nearest unit rather than truncated, so the
+ * centre-to-camera vector is off by at most 0.87 units, which the ceiling
+ * already applied to the stored radius absorbs. Truncating instead needs an
+ * explicit unit of slack, and that extra slack was measured to admit two more
+ * faces than it saved culling work. */
 static inline __attribute__((always_inline)) int face_is_in_view(
                            const RuntimeFace *face, int32_t camera_x,
                            int32_t camera_y, int32_t camera_z,
                            int sine, int cosine)
 {
-    MapVertex center = {face->center_x, face->center_y, face->center_z};
-    CameraPoint point = to_camera(center, camera_x, camera_y, camera_z, sine, cosine);
+    int32_t dx = face->center_x - camera_x;
+    int32_t dy = face->center_y - camera_y;
+    int32_t depth = (cosine * dx + sine * dy) >> 14;
+    int32_t horizontal = absolute((cosine * dy - sine * dx) >> 14);
+    int32_t vertical = absolute(face->center_z - camera_z);
     int radius = face->radius;
-    int depth = Q8_TO_INT(point.depth);
-    int horizontal = absolute(Q8_TO_INT(point.horizontal));
-    int vertical = absolute(Q8_TO_INT(point.vertical));
     if (depth + radius < 8) return 0;
     if (horizontal > radius && (horizontal - radius) * FOCAL_LENGTH > depth * 60) return 0;
     if (vertical > radius && (vertical - radius) * FOCAL_LENGTH > depth * 40) return 0;
     return 1;
 }
 
-static inline __attribute__((always_inline)) int32_t runtime_plane_distance_q8(
+/* Signed side of a face plane, in Q14 world units, from an integer camera
+ * position. Only the sign is used, and a Q14 normal against a 13-bit
+ * coordinate stays inside 32 bits, so no 64-bit multiply is needed. */
+static inline __attribute__((always_inline)) int32_t runtime_plane_side(
                             const RuntimeFace *face, int32_t x, int32_t y, int32_t z)
 {
-    int64_t sum = (int64_t)face->nx * x + (int64_t)face->ny * y +
-                  (int64_t)face->nz * z;
-    return Q14_TO_INT(sum) - Q8_FROM_INT(face->distance);
+    return face->nx * x + face->ny * y + face->nz * z -
+           ((int32_t)face->distance << 14);
 }
 
 static void append_vertex(unsigned vertex)
@@ -135,7 +151,7 @@ static void append_vertex(unsigned vertex)
     frame_vertices[frame_vertex_count++] = (uint16_t)vertex;
 }
 
-static void append_edge(unsigned edge)
+static __attribute__((unused)) void append_edge(unsigned edge)
 {
     if (edge_stamp[edge] == frame_stamp) return;
     edge_stamp[edge] = frame_stamp;
@@ -148,19 +164,30 @@ static HOT void build_frame_lists(int32_t camera_x, int32_t camera_y,
                               int32_t camera_z, uint8_t yaw)
 {
     int sine = sine_q14[yaw], cosine = sine_q14[(uint8_t)(yaw + 64)];
+    int32_t camera_ix = Q8_TO_INT(camera_x + 128);
+    int32_t camera_iy = Q8_TO_INT(camera_y + 128);
+    int32_t camera_iz = Q8_TO_INT(camera_z + 128);
     frame_edge_count = frame_vertex_count = accepted_face_count = 0;
     for (unsigned i = 0; i < candidate_face_count; ++i) {
         const RuntimeFace *face = &runtime_faces[i];
-        int32_t distance = runtime_plane_distance_q8(face, camera_x, camera_y, camera_z);
-        if ((!face->side && distance >= 0) || (face->side && distance <= 0)) continue;
-        if (!face_is_in_view(face, camera_x, camera_y, camera_z, sine, cosine)) continue;
+        int32_t side = runtime_plane_side(face, camera_ix, camera_iy, camera_iz);
+        if ((!face->side && side >= 0) || (face->side && side <= 0)) continue;
+        if (!face_is_in_view(face, camera_ix, camera_iy, camera_iz, sine, cosine)) continue;
 #ifdef BSP_TEXTURED
         frame_faces[accepted_face_count] = (uint16_t)i;
 #endif
         ++accepted_face_count;
         for (unsigned edge_index = 0; edge_index < face->edge_count; ++edge_index) {
             int edge = bsp_surfedges[face->first_edge + edge_index];
+#ifdef BSP_TEXTURED
+            /* The textured path never consumes frame_edges; it needs only the
+             * unique vertex list for the batched transform. */
+            MapEdge entry = runtime_edges[(unsigned)(edge < 0 ? -edge : edge)];
+            append_vertex(entry.first);
+            append_vertex(entry.second);
+#else
             append_edge((unsigned)(edge < 0 ? -edge : edge));
+#endif
         }
     }
 }
