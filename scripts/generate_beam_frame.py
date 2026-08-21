@@ -40,9 +40,9 @@ FOCAL = 56.0
 EYE_HEIGHT = 22.0
 NEAR = 8.0
 MAX_COMMANDS = 24                 # per line; the shortest spans merge away
-# The odd (doubled) lines are pure staging slack, so the feeder reads its
-# commands from IWRAM: ~24 cycles per issue, three logical pixels.
-MIN_SPAN = 3
+# The feeder's fall-through issue path measures ~35 cycles, so back-to-back
+# commands need five logical pixels (40 cycles) between starts.
+MIN_SPAN = 5
 DRIFT_SPLIT = 32                  # pixels between corrections on walls
 
 

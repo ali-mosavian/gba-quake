@@ -36,7 +36,7 @@
 .equ DMA0_BASE,          0x040000b0
 .equ DMA_TIMER_KICK,     0xa7400001
 .equ HBLANK_CYCLES,      272
-.equ TAIL_OVERHEAD,      16
+.equ TAIL_OVERHEAD,      40
 .equ SLED_SLOTS,         64
 .equ DISPSTAT_HBLANK,    0x02
 
@@ -77,6 +77,7 @@ raster_beam_frame:
     ldrb    r8, [r9], #1            @ commands on this logical line
     mov     r6, #2                  @ two screen lines per logical line
 .Lfeed_pass:
+    stmfd   sp!, {r6}               @ r6 is the sled target inside the loop
     mov     r11, r10                @ rewind to the line's first command
 
     /* Wait for the line BEFORE the target, then for its HBlank, and install
@@ -135,36 +136,61 @@ raster_beam_frame:
 .Lnext_command:
     cmp     r7, r8
     bhs     .Lpass_done
-    ldrh    r0, [r11]               @ issue cycle within HDraw
-    add     r12, r0, #HBLANK_CYCLES - TAIL_OVERHEAD
-    sub     r2, r12, #SLED_SLOTS - 8
-3:  ldrh    r0, [r3]
-    cmp     r0, r2
-    blo     3b
+    /* Command cost is what sets the minimum span spacing, and the first
+     * version of this loop cost 66 cycles against a 24-cycle model -- every
+     * command slipped, lines overran by one, and each line then waited a
+     * full frame for its VCOUNT window to come around again: the screen
+     * showed one striped line per frame, identically on hardware and in
+     * mGBA. This version: one ldm, pc stored straight from the packed word
+     * (strh writes the low half), pa with a single shift, and no sled at
+     * all for a command already inside the issue window -- back-to-back
+     * spans take the fall-through path at ~35 cycles. */
+    ldrh    r6, [r11]               @ issue cycle within HDraw
+    add     r6, r6, #HBLANK_CYCLES - TAIL_OVERHEAD
     ldrh    r0, [r3]
-    subs    r0, r12, r0
+    subs    r0, r6, r0
+    ble     .Lissue                 @ due or overdue: issue immediately
+    cmp     r0, #SLED_SLOTS - 1
+    ble     .Lsled                  @ close: burn the exact remainder
+    sub     r2, r6, #SLED_SLOTS - 8
+1:  ldrh    r0, [r3]                @ far: coarse-wait into sled range
+    cmp     r0, r2
+    blo     1b
+    ldrh    r0, [r3]
+    subs    r0, r6, r0
     movlt   r0, #0
     cmp     r0, #SLED_SLOTS - 1
     movgt   r0, #SLED_SLOTS - 1
+.Lsled:
     rsb     r0, r0, #SLED_SLOTS - 1
     add     pc, pc, r0, lsl #2
     nop
 .rept SLED_SLOTS
     nop
 .endr
-    ldrsh   r0, [r11, #2]
+.Lissue:
+    ldmia   r11!, {r0, r1, r2, r12} @ cycle|pa<<16, pc|pad, X, Y
+    mov     r0, r0, asr #16
     strh    r0, [r4, #REG_BG2PA_OFF]
-    ldrsh   r0, [r11, #4]
-    strh    r0, [r4, #REG_BG2PC_OFF]
-    ldr     r0, [r11, #8]
-    str     r0, [r4, #REG_BG2X_OFF]
-    ldr     r0, [r11, #12]
-    str     r0, [r4, #REG_BG2Y_OFF]
-    add     r11, r11, #16
+    strh    r1, [r4, #REG_BG2PC_OFF]
+    str     r2, [r4, #REG_BG2X_OFF]
+    str     r12, [r4, #REG_BG2Y_OFF]
+#ifdef BEAM_TRACE
+    ldr     r0, =beam_trace
+    ldr     r2, [r0]
+    add     r2, r2, #4
+    and     r2, r2, #0x3fc
+    str     r2, [r0]
+    ldrh    r1, [r3]
+    orr     r1, r1, r6, lsl #16
+    add     r0, r0, r2
+    str     r1, [r0]
+#endif
     add     r7, r7, #1
     b       .Lnext_command
 
 .Lpass_done:
+    ldmfd   sp!, {r6}
 #ifdef BEAM_TRACE
     /* And VCOUNT plus timer at pass end, in the following slot. */
     ldr     r0, =beam_trace
