@@ -259,28 +259,39 @@ static unsigned build_edge_walkers(const TextureVertex *vertices,
     return count;
 }
 
-static int polygon_scanline(TextureEdgeWalker *walkers,
-                            unsigned walker_count, int y, int *left, int *right)
+/* Every edge crossing on one row, in x order.
+ *
+ * This replaced a min/max sweep, which is the same thing for a convex polygon
+ * and wrong for any other: it fills straight across a notch. Sorting the
+ * crossings and filling between consecutive pairs is the even-odd rule, and it
+ * is what lets the extractor merge coplanar faces without having to keep the
+ * result convex -- 12.2% of faces absorbed under that constraint against 38.4%
+ * without it.
+ *
+ * The sort is an insertion sort because the arrays are tiny and almost always
+ * already ordered: a convex face produces exactly two crossings, so the loop
+ * body runs once and compares once. Only the 321 faces on dm1 that actually
+ * have a reflex corner ever produce four or more.
+ *
+ * Each edge is half-open in y, [low_y, high_y), so a closed ring contributes
+ * an even number of crossings on every row and the pairs always match up. */
+static unsigned polygon_crossings(TextureEdgeWalker *walkers,
+                                  unsigned walker_count, int y, int32_t *out)
 {
-    int32_t minimum_x = 0, maximum_x = 0;
-    int count = 0;
+    unsigned count = 0;
     for (unsigned edge = 0; edge < walker_count; ++edge) {
         TextureEdgeWalker *walker = &walkers[edge];
         if (y < walker->low_y || y >= walker->high_y) continue;
         int32_t x = walker->x_q8;
         walker->x_q8 += walker->step_q8;
-        if (!count || x < minimum_x) minimum_x = x;
-        if (!count || x > maximum_x) maximum_x = x;
-        ++count;
+        unsigned slot = count++;
+        while (slot && out[slot - 1] > x) {
+            out[slot] = out[slot - 1];
+            --slot;
+        }
+        out[slot] = x;
     }
-    if (count < 2) return 0;
-    /* Same rule across the row: a pixel is covered when its centre falls
-     * inside the span, so the right edge is exclusive. */
-    *left = (minimum_x + 128) >> 8;
-    *right = ((maximum_x + 128) >> 8) - 1;
-    if (*left < 0) *left = 0;
-    if (*right >= SCREEN_WIDTH) *right = SCREEN_WIDTH - 1;
-    return *left <= *right;
+    return count;
 }
 
 /* Executing this from Game Pak ROM costs roughly 4x: ARM instructions are 32
@@ -448,280 +459,299 @@ void draw_textured_polygon_reference(
     int64_t voz_row = plane_value(plane.v_over_depth, plane.v_over_depth_dx,
                                   plane.v_over_depth_dy, plane.origin_xq8,
                                   plane.origin_yq8, 0, min_y, OVER_DEPTH_BITS);
+    int32_t crossings[CLIP_RING_MAX];
+#ifdef BSP_PROFILE_COUNTS
+    /* drawn_rows counts rows that produced at least one run, as it did when a
+     * row could only produce one. */
+    unsigned row_drawn = 0;
+#define COUNT_ROW(value) (row_drawn = (value))
+#else
+#define COUNT_ROW(value) ((void)0)
+#endif
     for (int y = min_y; y <= max_y; ++y) {
-        int left, right;
-        if (!polygon_scanline(walkers, walker_count, y, &left, &right)) {
-            inv_row += plane.inverse_depth_dy;
-            uoz_row += plane.u_over_depth_dy;
-            voz_row += plane.v_over_depth_dy;
-            continue;
-        }
+        unsigned crossing_count =
+            polygon_crossings(walkers, walker_count, y, crossings);
 #ifdef BSP_TEXTURED_NO_SPANS
-        degenerate_face_count += (uint16_t)(left + right);  /* defeat DCE */
+        degenerate_face_count += (uint16_t)crossing_count;   /* defeat DCE */
         inv_row += plane.inverse_depth_dy;
         uoz_row += plane.u_over_depth_dy;
         voz_row += plane.v_over_depth_dy;
         continue;
 #endif
-        /* Narrow once per row: from here to the end of the row every value is
-         * on the face, so 32 bits suffice and the span loop stays 32-bit. */
-        int32_t inv0 = (int32_t)(inv_row + (int64_t)plane.inverse_depth_dx * left);
-        int32_t uoz0 = (int32_t)(uoz_row + (int64_t)plane.u_over_depth_dx * left);
-        int32_t voz0 = (int32_t)(voz_row + (int64_t)plane.v_over_depth_dx * left);
+        COUNT_ROW(0);
+        /* One filled run between each pair of crossings. A convex face has a
+         * single pair and this loop runs once; a merged face with a notch in
+         * it has two or more, and the notch stays empty. */
+        for (unsigned pair = 0; pair + 1 < crossing_count; pair += 2) {
+            /* Same rule across the row as along it: a pixel is covered when its
+             * centre falls inside the run, so the right edge is exclusive. */
+            int left = (crossings[pair] + 128) >> 8;
+            int right = ((crossings[pair + 1] + 128) >> 8) - 1;
+            if (left < 0) left = 0;
+            if (right >= SCREEN_WIDTH) right = SCREEN_WIDTH - 1;
+            if (left > right) continue;
+            COUNT_ROW(1);
+            /* Narrow once per run: from here to the end of it every value is on
+             * the face, so 32 bits suffice and the span loop stays 32-bit. */
+            int32_t inv0 = (int32_t)(inv_row + (int64_t)plane.inverse_depth_dx * left);
+            int32_t uoz0 = (int32_t)(uoz_row + (int64_t)plane.u_over_depth_dx * left);
+            int32_t voz0 = (int32_t)(voz_row + (int64_t)plane.v_over_depth_dx * left);
 #ifdef BSP_TEXTURED_ASM_SPANS
-        /* One call per scanline. The kernel walks every 32-pixel segment of
-         * the row itself, so the argument block is built once here rather than
-         * once per segment. */
-        row_args.row_pixels = logical_framebuffer + y * SCREEN_WIDTH;
-        row_args.coverage_row = texture_coverage[y];
-        row_args.left = left;
-        row_args.right = right;
-        row_args.inverse_depth = inv0;
-        row_args.u_over_depth = uoz0;
-        row_args.v_over_depth = voz0;
-        draw_texture_row_arm(&row_args);
+            /* One call per scanline. The kernel walks every 32-pixel segment of
+             * the row itself, so the argument block is built once here rather than
+             * once per segment. */
+            row_args.row_pixels = logical_framebuffer + y * SCREEN_WIDTH;
+            row_args.coverage_row = texture_coverage[y];
+            row_args.left = left;
+            row_args.right = right;
+            row_args.inverse_depth = inv0;
+            row_args.u_over_depth = uoz0;
+            row_args.v_over_depth = voz0;
+            draw_texture_row_arm(&row_args);
 #else
-        COUNT(drawn_row_count, 1);
-        /* Segments stop at the next 32-pixel boundary, so a segment never
-         * straddles two coverage words and is never longer than the 32-pixel
-         * perspective interval. */
-        for (int span = left; span <= right; ) {
-            int end = minimum(right, span | span_mask_bits);
-            COUNT(drawn_span_count, 1);
-            int segment_pixels = end - span;
-            /* Occlusion is decided before any perspective work. Faces
-             * arrive near-to-far, so about a third of segments are already
-             * fully covered; testing one mask first saves them four reciprocal
-             * multiplies each. (An earlier attempt at early rejection lost,
-             * but that was against per-pixel byte coverage, where the test
-             * cost as much as the work it skipped.) */
-            uint8_t *row = logical_framebuffer + y * SCREEN_WIDTH;
+            /* Segments stop at the next 32-pixel boundary, so a segment never
+             * straddles two coverage words and is never longer than the 32-pixel
+             * perspective interval. */
+            for (int span = left; span <= right; ) {
+                int end = minimum(right, span | span_mask_bits);
+                COUNT(drawn_span_count, 1);
+                int segment_pixels = end - span;
+                /* Occlusion is decided before any perspective work. Faces
+                 * arrive near-to-far, so about a third of segments are already
+                 * fully covered; testing one mask first saves them four reciprocal
+                 * multiplies each. (An earlier attempt at early rejection lost,
+                 * but that was against per-pixel byte coverage, where the test
+                 * cost as much as the work it skipped.) */
+                uint8_t *row = logical_framebuffer + y * SCREEN_WIDTH;
 #ifndef BSP_TEXTURED_NO_COVERAGE
-            uint32_t *coverage_word = &texture_coverage[y][span >> 5];
-            uint32_t covered = *coverage_word;
-            /* Bits this segment occupies. Segments are cut on 32-pixel
-             * boundaries, so one never straddles two coverage words. */
-            uint32_t span_mask = (0xffffffffu >> (31 - (unsigned)(end & 31))) &
-                                 (0xffffffffu << (unsigned)(span & 31));
-            uint32_t blocked = covered & span_mask;
-            if (blocked == span_mask) {
-                COUNT(span_hidden_count, 1);
-                inv0 += plane.inverse_depth_dx * (segment_pixels + 1);
-                uoz0 += plane.u_over_depth_dx * (segment_pixels + 1);
-                voz0 += plane.v_over_depth_dx * (segment_pixels + 1);
-                span = end + 1;
-                continue;
-            }
+                uint32_t *coverage_word = &texture_coverage[y][span >> 5];
+                uint32_t covered = *coverage_word;
+                /* Bits this segment occupies. Segments are cut on 32-pixel
+                 * boundaries, so one never straddles two coverage words. */
+                uint32_t span_mask = (0xffffffffu >> (31 - (unsigned)(end & 31))) &
+                                     (0xffffffffu << (unsigned)(span & 31));
+                uint32_t blocked = covered & span_mask;
+                if (blocked == span_mask) {
+                    COUNT(span_hidden_count, 1);
+                    inv0 += plane.inverse_depth_dx * (segment_pixels + 1);
+                    uoz0 += plane.u_over_depth_dx * (segment_pixels + 1);
+                    voz0 += plane.v_over_depth_dx * (segment_pixels + 1);
+                    span = end + 1;
+                    continue;
+                }
 #else
-            uint32_t blocked = 0;
+                uint32_t blocked = 0;
 #endif
-            /* Perspective-correct at BOTH ends of the segment, with the
-             * affine line fitted across the pair.
-             *
-             * Deriving the step from the gradient at the start alone is
-             * cheaper and looks harmless on the tiny faces that dominate the
-             * span-count average, but it anchors the affine line at one end
-             * and lets it drift the whole way across. On a wall large enough
-             * to fill a segment, seen at an angle so depth varies 10-20%
-             * across it, that measured 6.82 texels of mean error against an
-             * exact reference and 38.9 at worst -- visible as the texture
-             * swimming as the camera turns. Fitting across both ends brings
-             * it to 2.72, and halving the interval to 16 pixels to 0.86. */
-            int32_t inv1 = inv0 + plane.inverse_depth_dx * segment_pixels;
-            int32_t uoz1 = uoz0 + plane.u_over_depth_dx * segment_pixels;
-            int32_t voz1 = voz0 + plane.v_over_depth_dx * segment_pixels;
-            int u = texel_from_planes(uoz0, inv0);
-            int v = texel_from_planes(voz0, inv0);
-            int u1 = texel_from_planes(uoz1, inv1);
-            int v1 = texel_from_planes(voz1, inv1);
-            int du = divide_short_span(u1 - u, (unsigned)segment_pixels);
-            int dv = divide_short_span(v1 - v, (unsigned)segment_pixels);
+                /* Perspective-correct at BOTH ends of the segment, with the
+                 * affine line fitted across the pair.
+                 *
+                 * Deriving the step from the gradient at the start alone is
+                 * cheaper and looks harmless on the tiny faces that dominate the
+                 * span-count average, but it anchors the affine line at one end
+                 * and lets it drift the whole way across. On a wall large enough
+                 * to fill a segment, seen at an angle so depth varies 10-20%
+                 * across it, that measured 6.82 texels of mean error against an
+                 * exact reference and 38.9 at worst -- visible as the texture
+                 * swimming as the camera turns. Fitting across both ends brings
+                 * it to 2.72, and halving the interval to 16 pixels to 0.86. */
+                int32_t inv1 = inv0 + plane.inverse_depth_dx * segment_pixels;
+                int32_t uoz1 = uoz0 + plane.u_over_depth_dx * segment_pixels;
+                int32_t voz1 = voz0 + plane.v_over_depth_dx * segment_pixels;
+                int u = texel_from_planes(uoz0, inv0);
+                int v = texel_from_planes(voz0, inv0);
+                int u1 = texel_from_planes(uoz1, inv1);
+                int v1 = texel_from_planes(voz1, inv1);
+                int du = divide_short_span(u1 - u, (unsigned)segment_pixels);
+                int dv = divide_short_span(v1 - v, (unsigned)segment_pixels);
 #if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH) && \
-    !defined(BSP_TEXTURED_NO_LIGHT)
-            /* One luxel for the whole segment, taken at its midpoint.
-             *
-             * A luxel is 16 world units and a segment is at most 32 screen
-             * pixels, so a segment spans two or three luxels at most, and the
-             * lightmap is smooth at that scale: half of all adjacent luxel
-             * pairs on this map are identical and 95% are within two shade
-             * rows of each other. Interpolating the light per pixel instead
-             * was built and measured, and cost 117,713 cycles a frame against
-             * this version's 67,738 -- nearly twice the price for a difference
-             * the segment-boundary column statistics cannot separate from the
-             * texture's own noise.
-             *
-             * Sampled BEFORE the wrap below: u and v are still absolute texel
-             * coordinates here, and a texture that tiles across the face wraps
-             * them back to the same few texels while the lightmap must keep
-             * running across the whole surface.
-             *
-             * The shift is one past BSP_LUXEL_SHIFT because the two ends are
-             * summed rather than averaged; halving is folded into it.
-             *
-             * No per-axis clamp. Every face vertex is checked at build time
-             * to land at least one luxel inside its block, and a point inside
-             * a segment cannot stray much further: the affine error between
-             * perspective corrections is bounded at 0.86 texels at this mip,
-             * which is a tenth of a luxel. The replicated border covers the
-             * rest. The mask is the only bounds test, and it is there so that
-             * a segment surviving near-plane clipping with a very large 1/z
-             * cannot read past the array -- it wraps instead of clamping
-             * because at that point one segment is already wrong either way,
-             * and wrapping is one instruction. */
-            unsigned luxel_index = (unsigned)(
-                luxel_base + (((v + v1) >> (BSP_LUXEL_SHIFT + 1)) * luxel_width) +
-                             (((u + u1) >> (BSP_LUXEL_SHIFT + 1))));
-            const uint8_t *const shade_row =
-                shade_table +
-                ((unsigned)bsp_lightmap_luxels[luxel_index & BSP_LUXEL_MASK] << 8);
+        !defined(BSP_TEXTURED_NO_LIGHT)
+                /* One luxel for the whole segment, taken at its midpoint.
+                 *
+                 * A luxel is 16 world units and a segment is at most 32 screen
+                 * pixels, so a segment spans two or three luxels at most, and the
+                 * lightmap is smooth at that scale: half of all adjacent luxel
+                 * pairs on this map are identical and 95% are within two shade
+                 * rows of each other. Interpolating the light per pixel instead
+                 * was built and measured, and cost 117,713 cycles a frame against
+                 * this version's 67,738 -- nearly twice the price for a difference
+                 * the segment-boundary column statistics cannot separate from the
+                 * texture's own noise.
+                 *
+                 * Sampled BEFORE the wrap below: u and v are still absolute texel
+                 * coordinates here, and a texture that tiles across the face wraps
+                 * them back to the same few texels while the lightmap must keep
+                 * running across the whole surface.
+                 *
+                 * The shift is one past BSP_LUXEL_SHIFT because the two ends are
+                 * summed rather than averaged; halving is folded into it.
+                 *
+                 * No per-axis clamp. Every face vertex is checked at build time
+                 * to land at least one luxel inside its block, and a point inside
+                 * a segment cannot stray much further: the affine error between
+                 * perspective corrections is bounded at 0.86 texels at this mip,
+                 * which is a tenth of a luxel. The replicated border covers the
+                 * rest. The mask is the only bounds test, and it is there so that
+                 * a segment surviving near-plane clipping with a very large 1/z
+                 * cannot read past the array -- it wraps instead of clamping
+                 * because at that point one segment is already wrong either way,
+                 * and wrapping is one instruction. */
+                unsigned luxel_index = (unsigned)(
+                    luxel_base + (((v + v1) >> (BSP_LUXEL_SHIFT + 1)) * luxel_width) +
+                                 (((u + u1) >> (BSP_LUXEL_SHIFT + 1))));
+                const uint8_t *const shade_row =
+                    shade_table +
+                    ((unsigned)bsp_lightmap_luxels[luxel_index & BSP_LUXEL_MASK] << 8);
 #endif
 #if !defined(BSP_TEXTURED_SOLID) && !defined(BSP_TEXTURED_NO_FETCH)
-            /* Nearest texel, with Hecker's direction-stable tie break.
-             *
-             * Truncating u and v biases every lookup half a texel toward -u
-             * and -v. Rounding fixes the bias but leaves exact halves landing
-             * on whichever side the rounding happens to favour, so a texel
-             * boundary alternates as a gradient changes sign. Adding 128 when
-             * the gradient is positive and 127 when it is negative is the
-             * fixed-point form of floor(x + 1/2) and ceil(x - 1/2), which
-             * breaks the tie consistently against the direction of travel.
-             *
-             * Applied once per segment: the bias is a constant and survives
-             * the per-pixel stepping, and du and dv cannot change sign inside
-             * a segment. */
-            /* (x >> 31) is -1 for a negative gradient and 0 otherwise, so
-             * this is 128 or 127 without a branch. */
-            u += 128 + (du >> 31);
-            v += 128 + (dv >> 31);
-            /* Wrap once here so the pre-scaled v cannot leave 32 bits, then
-             * fold the row shift into v and its step. Both are per segment,
-             * not per pixel. */
-            u &= (int)u_wrap;
-            v = (v & (int)v_wrap) << width_shift;
-            dv <<= width_shift;
+                /* Nearest texel, with Hecker's direction-stable tie break.
+                 *
+                 * Truncating u and v biases every lookup half a texel toward -u
+                 * and -v. Rounding fixes the bias but leaves exact halves landing
+                 * on whichever side the rounding happens to favour, so a texel
+                 * boundary alternates as a gradient changes sign. Adding 128 when
+                 * the gradient is positive and 127 when it is negative is the
+                 * fixed-point form of floor(x + 1/2) and ceil(x - 1/2), which
+                 * breaks the tie consistently against the direction of travel.
+                 *
+                 * Applied once per segment: the bias is a constant and survives
+                 * the per-pixel stepping, and du and dv cannot change sign inside
+                 * a segment. */
+                /* (x >> 31) is -1 for a negative gradient and 0 otherwise, so
+                 * this is 128 or 127 without a branch. */
+                u += 128 + (du >> 31);
+                v += 128 + (dv >> 31);
+                /* Wrap once here so the pre-scaled v cannot leave 32 bits, then
+                 * fold the row shift into v and its step. Both are per segment,
+                 * not per pixel. */
+                u &= (int)u_wrap;
+                v = (v & (int)v_wrap) << width_shift;
+                dv <<= width_shift;
 #endif
 #ifdef BSP_TEXTURED_SOLID
-            (void)u; (void)v; (void)du; (void)dv;   /* coverage-only diagnostic */
+                (void)u; (void)v; (void)du; (void)dv;   /* coverage-only diagnostic */
 #endif
 #ifdef BSP_TEXTURED_SOLID
 #define TEXEL() (1u)
 #elif defined(BSP_TEXTURED_NO_FETCH)
-/* Keeps the perspective math, the u/v stepping and the stores, but replaces
- * the two masks, the row multiply and the texture load with something cheap.
- * The gap to the real build is the address-computation-plus-fetch budget. */
+    /* Keeps the perspective math, the u/v stepping and the stores, but replaces
+     * the two masks, the row multiply and the texture load with something cheap.
+     * The gap to the real build is the address-computation-plus-fetch budget. */
 #define TEXEL() ((uint32_t)((u ^ v) >> 8) & 255u)
 #elif defined(BSP_TEXTURED_NO_LIGHT)
-/* v is pre-scaled by log2(width), so this is one masked shift per axis plus an
- * add - no row multiply. */
+    /* v is pre-scaled by log2(width), so this is one masked shift per axis plus an
+     * add - no row multiply. */
 #define TEXEL() ((uint32_t)texture_pixels[ \
-                    (((unsigned)(v >> 8)) & row_mask) + \
-                    (((unsigned)(u >> 8)) & u_mask)])
+                        (((unsigned)(v >> 8)) & row_mask) + \
+                        (((unsigned)(u >> 8)) & u_mask)])
 #else
-/* v is pre-scaled by log2(width), so the texel is one masked shift per axis
- * plus an add - no row multiply. The shade lookup that follows turns that
- * texel into the palette index it takes at this segment's light level, and
- * costs exactly one more byte load: the row pointer is a loop invariant. */
+    /* v is pre-scaled by log2(width), so the texel is one masked shift per axis
+     * plus an add - no row multiply. The shade lookup that follows turns that
+     * texel into the palette index it takes at this segment's light level, and
+     * costs exactly one more byte load: the row pointer is a loop invariant. */
 #define TEXEL() ((uint32_t)shade_row[texture_pixels[ \
-                    (((unsigned)(v >> 8)) & row_mask) + \
-                    (((unsigned)(u >> 8)) & u_mask)]])
+                        (((unsigned)(v >> 8)) & row_mask) + \
+                        (((unsigned)(u >> 8)) & u_mask)]])
 #endif
-/* Texels are fetched one at a time and cannot be batched: u and v step
- * independently, so consecutive pixels are never adjacent in the texture.
- *
- * The resulting pixels ARE consecutive in the framebuffer, so wider stores are
- * possible, and packing four texels into one word store was measured here at
- * -3.6K cycles. It is not used: the framebuffer is in IWRAM, where a byte
- * store and a word store both cost one cycle, so packing only trades three
- * stores for three ORs. Reaching a word store also means aligning the
- * destination first -- unaligned wide stores do not fault on ARM7TDMI, they
- * write to the aligned address -- and splitting the run into lead, aligned
- * body and tail costs three dispatches instead of one, measured at +30K. Ten
- * times what the wider stores return. */
+    /* Texels are fetched one at a time and cannot be batched: u and v step
+     * independently, so consecutive pixels are never adjacent in the texture.
+     *
+     * The resulting pixels ARE consecutive in the framebuffer, so wider stores are
+     * possible, and packing four texels into one word store was measured here at
+     * -3.6K cycles. It is not used: the framebuffer is in IWRAM, where a byte
+     * store and a word store both cost one cycle, so packing only trades three
+     * stores for three ORs. Reaching a word store also means aligning the
+     * destination first -- unaligned wide stores do not fault on ARM7TDMI, they
+     * write to the aligned address -- and splitting the run into lead, aligned
+     * body and tail costs three dispatches instead of one, measured at +30K. Ten
+     * times what the wider stores return. */
 #define SHIFT_ONE() do { u += du; v += dv; } while (0)
 #define WRITE_ONE() do { *destination++ = (uint8_t)TEXEL(); SHIFT_ONE(); } while (0)
-            /* Byte stores, deliberately. Packing four texels into one word
-             * store was measured both here and with the framebuffer still in
-             * EWRAM, and lost either way: spans average about five pixels, so
-             * an aligned free quad rarely exists, and the packing shifts cost
-             * more than the stores they replace. */
-            if (!blocked) {
-                /* Nothing in front of this run, so no per-pixel coverage test
-                 * is needed: one mask OR at the end records the whole run.
-                 *
-                 * The run itself dispatches once into fully unrolled code
-                 * rather than looping. Segments here average about five
-                 * pixels, so a counted loop spends much of its time on the
-                 * counter and the branch instead of on texels. Falling through
-                 * a single body keeps one copy of the logic for every length. */
-                COUNT(span_clear_count, 1);
-                COUNT(texel_sample_count, (uint32_t)segment_pixels + 1);
-                uint8_t *destination = row + span;
-                switch ((unsigned)segment_pixels + 1) {
-                case 32: WRITE_ONE(); __attribute__((fallthrough));
-                case 31: WRITE_ONE(); __attribute__((fallthrough));
-                case 30: WRITE_ONE(); __attribute__((fallthrough));
-                case 29: WRITE_ONE(); __attribute__((fallthrough));
-                case 28: WRITE_ONE(); __attribute__((fallthrough));
-                case 27: WRITE_ONE(); __attribute__((fallthrough));
-                case 26: WRITE_ONE(); __attribute__((fallthrough));
-                case 25: WRITE_ONE(); __attribute__((fallthrough));
-                case 24: WRITE_ONE(); __attribute__((fallthrough));
-                case 23: WRITE_ONE(); __attribute__((fallthrough));
-                case 22: WRITE_ONE(); __attribute__((fallthrough));
-                case 21: WRITE_ONE(); __attribute__((fallthrough));
-                case 20: WRITE_ONE(); __attribute__((fallthrough));
-                case 19: WRITE_ONE(); __attribute__((fallthrough));
-                case 18: WRITE_ONE(); __attribute__((fallthrough));
-                case 17: WRITE_ONE(); __attribute__((fallthrough));
-                case 16: WRITE_ONE(); __attribute__((fallthrough));
-                case 15: WRITE_ONE(); __attribute__((fallthrough));
-                case 14: WRITE_ONE(); __attribute__((fallthrough));
-                case 13: WRITE_ONE(); __attribute__((fallthrough));
-                case 12: WRITE_ONE(); __attribute__((fallthrough));
-                case 11: WRITE_ONE(); __attribute__((fallthrough));
-                case 10: WRITE_ONE(); __attribute__((fallthrough));
-                case  9: WRITE_ONE(); __attribute__((fallthrough));
-                case  8: WRITE_ONE(); __attribute__((fallthrough));
-                case  7: WRITE_ONE(); __attribute__((fallthrough));
-                case  6: WRITE_ONE(); __attribute__((fallthrough));
-                case  5: WRITE_ONE(); __attribute__((fallthrough));
-                case  4: WRITE_ONE(); __attribute__((fallthrough));
-                case  3: WRITE_ONE(); __attribute__((fallthrough));
-                case  2: WRITE_ONE(); __attribute__((fallthrough));
-                case  1: WRITE_ONE(); break;
-                default: break;
-                }
-#ifndef BSP_TEXTURED_NO_COVERAGE
-                *coverage_word = covered | span_mask;
-#endif
-            }
-#ifndef BSP_TEXTURED_NO_COVERAGE
-            else {
-                COUNT(span_mixed_count, 1);
-                for (int x = span; x <= end; ++x) {
-                    uint32_t bit = 1u << (x & 31);
-                    if (!(covered & bit)) {
-                        covered |= bit;
-                        COUNT(texel_sample_count, 1);
-                        row[x] = (uint8_t)TEXEL();
+                /* Byte stores, deliberately. Packing four texels into one word
+                 * store was measured both here and with the framebuffer still in
+                 * EWRAM, and lost either way: spans average about five pixels, so
+                 * an aligned free quad rarely exists, and the packing shifts cost
+                 * more than the stores they replace. */
+                if (!blocked) {
+                    /* Nothing in front of this run, so no per-pixel coverage test
+                     * is needed: one mask OR at the end records the whole run.
+                     *
+                     * The run itself dispatches once into fully unrolled code
+                     * rather than looping. Segments here average about five
+                     * pixels, so a counted loop spends much of its time on the
+                     * counter and the branch instead of on texels. Falling through
+                     * a single body keeps one copy of the logic for every length. */
+                    COUNT(span_clear_count, 1);
+                    COUNT(texel_sample_count, (uint32_t)segment_pixels + 1);
+                    uint8_t *destination = row + span;
+                    switch ((unsigned)segment_pixels + 1) {
+                    case 32: WRITE_ONE(); __attribute__((fallthrough));
+                    case 31: WRITE_ONE(); __attribute__((fallthrough));
+                    case 30: WRITE_ONE(); __attribute__((fallthrough));
+                    case 29: WRITE_ONE(); __attribute__((fallthrough));
+                    case 28: WRITE_ONE(); __attribute__((fallthrough));
+                    case 27: WRITE_ONE(); __attribute__((fallthrough));
+                    case 26: WRITE_ONE(); __attribute__((fallthrough));
+                    case 25: WRITE_ONE(); __attribute__((fallthrough));
+                    case 24: WRITE_ONE(); __attribute__((fallthrough));
+                    case 23: WRITE_ONE(); __attribute__((fallthrough));
+                    case 22: WRITE_ONE(); __attribute__((fallthrough));
+                    case 21: WRITE_ONE(); __attribute__((fallthrough));
+                    case 20: WRITE_ONE(); __attribute__((fallthrough));
+                    case 19: WRITE_ONE(); __attribute__((fallthrough));
+                    case 18: WRITE_ONE(); __attribute__((fallthrough));
+                    case 17: WRITE_ONE(); __attribute__((fallthrough));
+                    case 16: WRITE_ONE(); __attribute__((fallthrough));
+                    case 15: WRITE_ONE(); __attribute__((fallthrough));
+                    case 14: WRITE_ONE(); __attribute__((fallthrough));
+                    case 13: WRITE_ONE(); __attribute__((fallthrough));
+                    case 12: WRITE_ONE(); __attribute__((fallthrough));
+                    case 11: WRITE_ONE(); __attribute__((fallthrough));
+                    case 10: WRITE_ONE(); __attribute__((fallthrough));
+                    case  9: WRITE_ONE(); __attribute__((fallthrough));
+                    case  8: WRITE_ONE(); __attribute__((fallthrough));
+                    case  7: WRITE_ONE(); __attribute__((fallthrough));
+                    case  6: WRITE_ONE(); __attribute__((fallthrough));
+                    case  5: WRITE_ONE(); __attribute__((fallthrough));
+                    case  4: WRITE_ONE(); __attribute__((fallthrough));
+                    case  3: WRITE_ONE(); __attribute__((fallthrough));
+                    case  2: WRITE_ONE(); __attribute__((fallthrough));
+                    case  1: WRITE_ONE(); break;
+                    default: break;
                     }
-                    SHIFT_ONE();
+#ifndef BSP_TEXTURED_NO_COVERAGE
+                    *coverage_word = covered | span_mask;
+#endif
                 }
-                *coverage_word = covered;
-            }
+#ifndef BSP_TEXTURED_NO_COVERAGE
+                else {
+                    COUNT(span_mixed_count, 1);
+                    for (int x = span; x <= end; ++x) {
+                        uint32_t bit = 1u << (x & 31);
+                        if (!(covered & bit)) {
+                            covered |= bit;
+                            COUNT(texel_sample_count, 1);
+                            row[x] = (uint8_t)TEXEL();
+                        }
+                        SHIFT_ONE();
+                    }
+                    *coverage_word = covered;
+                }
 #endif
 #undef TEXEL
 #undef SHIFT_ONE
 #undef WRITE_ONE
-            int advance = segment_pixels + 1;
-            inv0 += plane.inverse_depth_dx * advance;
-            uoz0 += plane.u_over_depth_dx * advance;
-            voz0 += plane.v_over_depth_dx * advance;
-            span = end + 1;
-        }
+                int advance = segment_pixels + 1;
+                inv0 += plane.inverse_depth_dx * advance;
+                uoz0 += plane.u_over_depth_dx * advance;
+                voz0 += plane.v_over_depth_dx * advance;
+                span = end + 1;
+            }
 #endif
+        }
+        COUNT(drawn_row_count, row_drawn);
         inv_row += plane.inverse_depth_dy;
         uoz_row += plane.u_over_depth_dy;
         voz_row += plane.v_over_depth_dy;
     }
+#undef COUNT_ROW
 }

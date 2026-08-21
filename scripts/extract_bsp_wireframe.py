@@ -40,7 +40,8 @@ def pak_entry(path, wanted):
     raise ValueError(f"{wanted} not found in {path}")
 
 
-def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks):
+def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks,
+                         allow_concave=False):
     """Merge edge-adjacent coplanar faces that share a texinfo, keeping every
     merged polygon convex.
 
@@ -74,6 +75,14 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks):
         i, j = shared
         spliced = ([r1[(i + 1 + k) % len(r1)] for k in range(len(r1))][:-1] +
                    [r2[(j + 1 + k) % len(r2)] for k in range(len(r2))][:-1])
+        if len(set(spliced)) != len(spliced):
+            # The union touches itself at a vertex. An even-odd fill draws it
+            # correctly, but the polygon is then two lobes joined at a point
+            # and every later stage -- the plane fit's widest-spread triple,
+            # the bounding sphere, the lightmap union rectangle -- is reasoning
+            # about a shape that is no longer one region. On dm1 this rejects
+            # 10 merges out of 886.
+            return None
         out, n = [], len(spliced)
         for k in range(n):
             prev, cur, nxt = spliced[(k - 1) % n], spliced[k], spliced[(k + 1) % n]
@@ -83,7 +92,7 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks):
             scale = math.sqrt(dot(e1, e1)) * math.sqrt(dot(e2, e2))
             if scale < 1e-9:
                 continue
-            if turn / scale < -EPS:
+            if not allow_concave and turn / scale < -EPS:
                 return None                  # concave joint
             if abs(turn) / scale <= EPS:
                 continue                     # collinear vertex, drop it
@@ -132,6 +141,34 @@ def merge_coplanar_faces(faces, rings, normals, vertices, nodes, leaves, marks):
     new_faces = [faces[i] for i in keep]
     new_rings = [working[i] for i in keep]
 
+    # A merged ring must enclose exactly the area of the faces that went into
+    # it. The rasteriser fills a ring by the even-odd rule, which covers
+    # exactly the interior of a simple polygon, and the shoelace area of a
+    # simple polygon is that same interior -- so equal areas means no notch got
+    # filled in and no piece got dropped. This is the check that a screenshot
+    # cannot do reliably: two builds at different frame rates sample the walk
+    # at different camera positions, so their frames are not comparable.
+    def ring_area(ring, normal):
+        total = (0.0, 0.0, 0.0)
+        for k in range(len(ring)):
+            a, b = vertices[ring[k]], vertices[ring[(k + 1) % len(ring)]]
+            total = (total[0] + a[1] * b[2] - a[2] * b[1],
+                     total[1] + a[2] * b[0] - a[0] * b[2],
+                     total[2] + a[0] * b[1] - a[1] * b[0])
+        return abs(dot(total, normal)) / 2.0
+
+    worst = 0.0
+    for new_index, survivor in enumerate(keep):
+        parts = [i for i, mapped in enumerate(face_map) if mapped == new_index]
+        if len(parts) < 2:
+            continue
+        normal = normals[survivor]
+        merged = ring_area(new_rings[new_index], normal)
+        pieces = sum(ring_area(rings[i], normal) for i in parts)
+        if pieces > 1e-6:
+            worst = max(worst, abs(merged - pieces) / pieces)
+    print(f"  merged-ring area agrees with its parts to {worst * 100:.4f}% worst case")
+
     # a node's faces are those on its plane, so its range stays contiguous
     new_nodes = []
     for node in nodes:
@@ -164,7 +201,7 @@ SHADE_SHIFT = 2
 
 
 def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
-            lmscale=16, lmgain=100):
+            lmscale=16, lmgain=100, concave_merge=False):
     data = pathlib.Path(input_path).read_bytes()
     if struct.unpack_from("<i", data)[0] != 29: raise ValueError("expected Quake BSP v29")
     lumps = [struct.unpack_from("<ii", data, 4 + i * 8) for i in range(15)]
@@ -254,10 +291,14 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
     face_map = list(range(len(faces)))
     if merge:
         faces, rings, nodes, leaves, marks, absorbed, face_map = merge_coplanar_faces(
-            faces, rings, normals, vertices, nodes, leaves, marks)
+            faces, rings, normals, vertices, nodes, leaves, marks,
+            allow_concave=concave_merge)
         print(f"  merged {absorbed} coplanar faces away "
               f"({100.0 * absorbed / (len(faces) + absorbed):.1f}%), "
-              f"{len(faces)} remain")
+              f"{len(faces)} remain"
+              f"{' (concave allowed)' if concave_merge else ''}; "
+              f"ring vertices {sum(len(r) for r in rings)}, "
+              f"longest ring {max(len(r) for r in rings)}")
 
     lines = ["/* Generated from a Quake 1 BSP; do not edit. */",
              "#ifndef BSP_WIREFRAME_MAP_H", "#define BSP_WIREFRAME_MAP_H", "enum {"]
@@ -463,4 +504,5 @@ if __name__ == "__main__":
             lmscale=next((int(a.split("=")[1]) for a in sys.argv
                           if a.startswith("--lmscale=")), 16),
             lmgain=next((int(a.split("=")[1]) for a in sys.argv
-                         if a.startswith("--lmgain=")), 100))
+                         if a.startswith("--lmgain=")), 100),
+            concave_merge="--concave-merge" in sys.argv)

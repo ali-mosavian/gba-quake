@@ -734,13 +734,30 @@ on the target, and the ones that did not pay were dropped.
 - **Explicit per-face vertex rings.** The largest single BSP-side win,
   **-32.3K**; see above.
 - **Coplanar face merging.** Edge-adjacent faces sharing a plane and texinfo
-  are spliced, with the merge rejected if any joint turns concave -- the
-  scanline fill takes min/max x per row, so it can only draw convex polygons.
-  The unconstrained upper bound is 53.9% fewer faces; convexity cuts that to
-  **12.2%** (2,283 -> 2,005, ring vertices 11,374 -> 9,554). At the spawn:
-  746 -> 668 candidates, 1,044 -> 957 rows, 1,187 -> 1,101 spans, **-25K**.
+  are spliced. The constraint used to be convexity, because the row sweep took
+  min/max x and would have filled straight across a notch; with the crossings
+  sweep below the merged polygon only has to stay *simple*, and the yield goes
+  from **12.2%** to **38.3%** (2,283 -> 1,409 faces, ring vertices 11,374 ->
+  7,180 -- merging removes the shared edges, so the rings get shorter as well
+  as fewer). At the spawn: 668 -> 448 candidates, 195 -> 128 accepted,
+  160 -> 108 drawn faces, 1,825 -> 1,627 rows, 2,328 -> 2,220 spans.
+  **-194,398** cycles against the sweep's **+88,587**, so **-105,811 net**
+  (1,979,344 -> 1,873,533, 8.48 -> 8.96 FPS). ROM falls 68KB and EWRAM 20KB
+  with it: most of the per-face tables are sized by the face count.
   Marksurfaces are remapped and de-duplicated and node face ranges renumbered;
   faces on one plane share a node, so near-to-far ordering survives.
+  A merge is refused if the spliced ring repeats a vertex. The union then
+  touches itself at a point, and while an even-odd fill draws that correctly,
+  every later stage -- the plane fit's widest-spread triple, the bounding
+  sphere, the lightmap union rectangle -- would be reasoning about a shape
+  that is no longer one region. 10 merges out of 886 on dm1.
+  The check that the merge is right is geometric, not visual: a merged ring's
+  shoelace area must equal the sum of its parts' areas, because the even-odd
+  fill covers exactly the interior of a simple polygon. It agrees to
+  **0.0000%** worst case. Screenshots cannot settle this -- two builds running
+  at different frame rates sample the scripted walk at different camera
+  positions, so their frames are not comparable past the first stationary
+  pose.
 - **Baked per-ring texture coordinates.** `s` and `t` are a function of the
   world vertex and the face's texinfo alone, so evaluating them per frame
   evaluates a constant: six multiplies and eight ROM axis reads per ring
@@ -783,11 +800,31 @@ The pattern across these: the remaining BSP indirections are per-face, and at
 vertex -- the explicit ring, and then the coordinates on it.
 
 What is left is camera-dependent and cannot be baked: the vertex transform
-(76,344), the per-face plane test (81,814), the projection in the face front
+(67,075), the per-face plane test (57,106), the projection in the face front
 end, and the whole span loop. With drawing removed entirely the frame is
-**455,646** cycles against a 559,333-cycle 30 FPS budget -- 81% of it spent
-before a single pixel. Offline preparation has taken what it can reach here;
-the rest is work volume.
+**404,345** cycles against a 559,333-cycle 30 FPS budget -- 72% of it spent
+before a single pixel, down from 91% before the coordinate bake and the
+non-convex merge. Layout work has taken what it can reach; what moved the
+number after that was cutting the face count.
+
+### Filling non-convex polygons
+
+The row sweep collects every edge crossing on the row, sorts them, and fills
+between consecutive pairs -- the even-odd rule. It replaced a min/max sweep,
+which is the same thing for a convex polygon and wrong for any other: it fills
+straight across a notch.
+
+On its own it is a **+88,587** cycle loss (4.5%), and on convex data it is
+pixel-identical to what it replaced, which is how it was checked. It earns its
+place by lifting the convexity constraint off the offline face merge, which
+then returns 194,398.
+
+The sort is an insertion sort because the arrays are tiny and almost always
+already ordered: a convex face produces exactly two crossings, so the loop body
+runs once and compares once. Only the 321 dm1 faces that actually have a
+reflex corner ever produce four or more. Each edge is half-open in y, so a
+closed ring contributes an even number of crossings on every row and the pairs
+always match up.
 
 ### Lightmaps
 

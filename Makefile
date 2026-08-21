@@ -68,7 +68,11 @@ BSP_LMGAIN ?= 100
 # make cannot see a variable change. Stamp them into a file that is rewritten
 # only when they actually differ, so changing BSP_MIP or BSP_LMGAIN on the
 # command line rebuilds the map and leaving them alone does not.
-BSP_SETTINGS := map=$(BSP_MAP) mip=$(BSP_MIP) lmscale=$(BSP_LMSCALE) lmgain=$(BSP_LMGAIN)
+# Coplanar merging: `simple` allows the merged polygon to be concave, which
+# the crossings-based row sweep can fill. `convex` keeps the old restriction.
+BSP_MERGE ?= simple
+BSP_MERGE_FLAG := $(if $(filter simple,$(BSP_MERGE)),--concave-merge,)
+BSP_SETTINGS := map=$(BSP_MAP) mip=$(BSP_MIP) lmscale=$(BSP_LMSCALE) lmgain=$(BSP_LMGAIN) merge=$(BSP_MERGE)
 .PHONY: FORCE
 FORCE:
 src/generated/.bsp_settings: FORCE
@@ -77,7 +81,7 @@ src/generated/.bsp_settings: FORCE
 
 src/generated/bsp_wireframe_map.h: scripts/extract_bsp_wireframe.py scripts/bsp_lightmap.py scripts/quake_palette.py src/generated/.bsp_settings
 	mkdir -p src/generated
-	python3 $< $(BSP_MAP) $@ $(BSP_PAK) --mip=$(BSP_MIP) --lmscale=$(BSP_LMSCALE) --lmgain=$(BSP_LMGAIN)
+	python3 $< $(BSP_MAP) $@ $(BSP_PAK) --mip=$(BSP_MIP) --lmscale=$(BSP_LMSCALE) --lmgain=$(BSP_LMGAIN) $(BSP_MERGE_FLAG)
 
 $(BUILD)/bsp_wireframe.o: src/quake/r_unity.c src/quake/r_state.c src/quake/r_fixed.h src/quake/r_bsp.c src/quake/r_clip.c src/quake/d_draw.c src/quake/d_scan.c src/quake/r_surf.c src/quake/r_main.c src/gba_hardware.h src/generated/runtime_cube_luts.h src/generated/bsp_wireframe_map.h | $(BUILD)
 	$(CC) $(CFLAGS) -O3 -marm -c $< -o $@
@@ -180,6 +184,10 @@ $(BUILD)/%.gba: $(BUILD)/%.elf
 	$(GBAFIX) $@ -t"AFFINE LAB" -cAFLB -m01
 
 native: all
+
+# Read one variable back out, for scripts/build.sh.
+print-%:
+	@echo '$($*)'
 
 docker:
 	./scripts/build.sh
