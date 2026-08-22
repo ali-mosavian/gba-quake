@@ -393,7 +393,13 @@ static HOT void render_textured_faces(void)
         /* Resolve the vertex ring once. surfedge -> edge -> vertex is three
          * dependent loads across ROM and EWRAM, and the ring is walked twice
          * on the clipped path. */
-        uint16_t ring[CLIP_RING_MAX];
+        /* EWRAM statics: the ring and the clip buffers spend most frames
+         * idle (the clip path serves ~50 of ~110 faces) but their 1.7KB sat
+         * at the peak of the IWRAM stack, whose floor is the top of .bss --
+         * where the `map` pointer lives. Two builds have now died to that
+         * margin; `projected` stays on the stack because the drawer's fit
+         * and walkers read it per vertex. */
+        EWRAM static uint16_t ring[CLIP_RING_MAX];
         unsigned planes = 0;
         TextureVertex projected[CLIP_RING_MAX];
         for (unsigned i = 0; i < count; ++i) {
@@ -423,7 +429,8 @@ static HOT void render_textured_faces(void)
 #endif
         if (planes) {
             COUNT(near_clipped_faces, 1);
-            ClipTextureVertex polygon[CLIP_RING_MAX], scratch[CLIP_RING_MAX];
+            EWRAM static ClipTextureVertex polygon[CLIP_RING_MAX],
+                                           scratch[CLIP_RING_MAX];
             for (unsigned i = 0; i < count; ++i)
                 polygon[i] = clip_texture_vertex(
                     ring[i], (unsigned)face->first_vertex + i);
