@@ -55,7 +55,8 @@ view (the drawbridge); ~1,741K where no mover is visible. 30 FPS is 559,333.
 | Per-map data under its own prefix + one MapDescriptor of pointers | the old bsp_* names live on as macros over a single `map` pointer; the renderer reads as it did single-map |
 | EWRAM arenas sized by MAPS_MAX_* across the included set | dm1, e1m7, end, dm4, dm5, dm6 fit; the big episode maps still do not |
 | Luxel arrays padded to one shared 256KB so BSP_LUXEL_MASK stays a compile-time constant | ~120KB ROM waste per map, zero runtime cost |
-| Menu only in the bsp_menu target | every benchmark ROM must reach its pose without input |
+| Menu only in the bsp_menu target | every benchmark ROM must reach its pose without input; BSP_START_MAP boots any map directly for testing |
+| map-> indirection cost | +58K at the spawn -- the macro layer's price |
 | START returns to the menu; map switch reinitialises palette, shade table, texture cache, entities, stamps | |
 | 3x5 font orientation | the octal literals were written top-row-first while the renderer reads low bits as the top row: SELECT MAP rendered SELErT M0P, 7 as L -- and the FPS counter's font had the same latent bug |
 
@@ -214,6 +215,13 @@ spawn and ~+31% at two other yaws, ~2,900 cycles per extra accepted face.
 - **The container cannot reach the BSP or the pak.** `scripts/build.sh` bind
   mounts both directories and forwards every `BSP_*` variable, or the
   container's `make` stamps different settings and invalidates a good header.
+- **The stack floor is the top of .bss, and the last variable there gets
+  eaten first.** The multi-map freeze was 234 bytes of menu interleave
+  arrays on the world loop's stack breaching a ~300-byte margin and
+  clobbering the `map` pointer -- the fourth stack overflow of the project
+  and the first disguised as a data bug (the entity pass looped over a
+  garbage face count). Anything sized MAPS_MAX_* belongs in EWRAM statics,
+  never on the IWRAM stack.
 - **Profile counters cost ~157K a frame**, a quarter of the 30 FPS budget, so
   they are opt-in. They also cost ~3KB of IWRAM code, which is why profile
   builds use the Duff dispatch: with the full unroll they overflow the stack

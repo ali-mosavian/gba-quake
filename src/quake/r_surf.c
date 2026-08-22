@@ -348,8 +348,14 @@ static HOT void render_textured_faces(void)
 #ifndef BSP_NO_ENTITY_DRAW
     /* Each mover takes its leaf's place in the front-to-back order and is
      * drawn there, between the world faces nearer and farther than it. */
-    unsigned entity_order[MAPS_MAX_ENTITIES];
-    uint16_t entity_position[MAPS_MAX_ENTITIES];
+    /* EWRAM statics, not stack. These sat in render_textured_faces' frame,
+     * and the ~234 bytes they added pushed the peak past the stack floor --
+     * which is the top of .bss, whose last resident is the `map` pointer.
+     * The clobbered pointer then sent the entity pass looping over a
+     * garbage face count: the fourth stack overflow of this project, and
+     * the first to corrupt something that made it look like a data bug. */
+    EWRAM static unsigned entity_order[MAPS_MAX_ENTITIES];
+    EWRAM static uint16_t entity_position[MAPS_MAX_ENTITIES];
     unsigned entity_total = 0;
     for (unsigned entity = 0; entity < BSP_ENTITY_COUNT; ++entity) {
         const MapEntity *record = &bsp_entities[entity];

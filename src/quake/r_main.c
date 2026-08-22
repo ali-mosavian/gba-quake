@@ -189,7 +189,10 @@ int main(void)
     REG_TM3CNT = TIMER_ENABLE | TIMER_DIV1024;
     REG_MEMCTRL = MEMCTRL_FAST_EWRAM;
     REG_DISPCNT = 0;
-    unsigned selected_map = 0;
+#ifndef BSP_START_MAP
+#define BSP_START_MAP 0
+#endif
+    unsigned selected_map = BSP_START_MAP;
 new_map:
 #ifdef BSP_MENU
     /* Only the shipping ROM opens the menu: every benchmark and profile
