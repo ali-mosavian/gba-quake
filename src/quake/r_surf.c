@@ -348,8 +348,8 @@ static HOT void render_textured_faces(void)
 #ifndef BSP_NO_ENTITY_DRAW
     /* Each mover takes its leaf's place in the front-to-back order and is
      * drawn there, between the world faces nearer and farther than it. */
-    unsigned entity_order[BSP_ENTITY_COUNT];
-    uint16_t entity_position[BSP_ENTITY_COUNT];
+    unsigned entity_order[MAPS_MAX_ENTITIES];
+    uint16_t entity_position[MAPS_MAX_ENTITIES];
     unsigned entity_total = 0;
     for (unsigned entity = 0; entity < BSP_ENTITY_COUNT; ++entity) {
         const MapEntity *record = &bsp_entities[entity];

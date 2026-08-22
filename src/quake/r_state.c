@@ -166,7 +166,83 @@ typedef struct {
     const uint16_t *projection_reciprocal;
 } TransformArgs;
 
-#include "../generated/bsp_wireframe_map.h"
+/* One map's everything, as pointers: the extractor emits each map's arrays
+ * under its own prefix and ties them together in one of these. The runtime
+ * holds a single `map` pointer, and the historical bsp_* names live on as
+ * macros over it, so the renderer reads exactly as it did when it was
+ * single-map. EWRAM arenas are sized by the MAPS_MAX_* bounds the index
+ * generator computes across the included set. */
+typedef struct {
+    char name[12];
+    const MapVertex *vertices; uint32_t vertex_count;
+    const MapEdge *edges; uint32_t edge_count;
+    const int16_t *surfedges;
+    const MapPlane *planes;
+    const int32_t *plane_distance_q8;
+    const MapClipNode *clipnodes; int32_t player_hull_head;
+    const MapNode *nodes; uint32_t node_count;
+    const MapLeaf *leaves; uint32_t leaf_count;
+    const uint16_t *marksurfaces;
+    const uint8_t *visibility; uint32_t visibility_bytes;
+    const MapFace *faces; uint32_t face_count;
+    const uint16_t *face_vertices;
+    const int32_t *face_texcoords;
+    const MapFaceLight *face_lights;
+    const uint8_t *lightmap_luxels;
+    const uint8_t *shade_rom;
+    const MapTexInfo *texinfo;
+    const MapTexture *textures; uint32_t texture_count;
+    const uint8_t *texture_pixels;
+    const uint16_t *palette;
+    const MapEntity *entities; uint32_t entity_count;
+    const MapVertex *torches; uint32_t torch_count;
+    int16_t spawn[3]; uint8_t spawn_yaw;
+    int16_t teleport[3]; uint8_t teleport_yaw;
+} MapDescriptor;
+
+#include "../generated/maps_index.h"
+
+static const MapDescriptor *map = 0;
+
+#define bsp_vertices          (map->vertices)
+#define bsp_edges             (map->edges)
+#define bsp_surfedges         (map->surfedges)
+#define bsp_planes            (map->planes)
+#define bsp_plane_distance_q8 (map->plane_distance_q8)
+#define bsp_clipnodes         (map->clipnodes)
+#define bsp_nodes             (map->nodes)
+#define bsp_leaves            (map->leaves)
+#define bsp_marksurfaces      (map->marksurfaces)
+#define bsp_visibility        (map->visibility)
+#define bsp_faces             (map->faces)
+#define bsp_face_vertices     (map->face_vertices)
+#define bsp_face_texcoords    (map->face_texcoords)
+#define bsp_face_lights       (map->face_lights)
+#define bsp_lightmap_luxels   (map->lightmap_luxels)
+#define bsp_texinfo           (map->texinfo)
+#define bsp_textures          (map->textures)
+#define bsp_texture_pixels    (map->texture_pixels)
+#define bsp_palette           (map->palette)
+#define bsp_entities          (map->entities)
+#define bsp_torches           (map->torches)
+#define BSP_VERTEX_COUNT      (map->vertex_count)
+#define BSP_EDGE_COUNT        (map->edge_count)
+#define BSP_FACE_COUNT        (map->face_count)
+#define BSP_NODE_COUNT        (map->node_count)
+#define BSP_LEAF_COUNT        (map->leaf_count)
+#define BSP_VISIBILITY_BYTES  (map->visibility_bytes)
+#define BSP_ENTITY_COUNT      (map->entity_count)
+#define BSP_TORCH_COUNT       (map->torch_count)
+#define BSP_PLAYER_HULL_HEAD  (map->player_hull_head)
+#define BSP_SPAWN_X           (map->spawn[0])
+#define BSP_SPAWN_Y           (map->spawn[1])
+#define BSP_SPAWN_Z           (map->spawn[2])
+#define BSP_SPAWN_YAW         (map->spawn_yaw)
+#define BSP_TELEPORT_X        (map->teleport[0])
+#define BSP_TELEPORT_Y        (map->teleport[1])
+#define BSP_TELEPORT_Z        (map->teleport[2])
+#define BSP_TELEPORT_YAW      (map->teleport_yaw)
+#define BSP_SHADE_BYTES       (BSP_SHADE_ROWS * 256)
 
 #ifdef BSP_PROFILE_COUNTS
 #define COUNT(counter, amount) ((counter) += (amount))
@@ -183,15 +259,15 @@ typedef struct {
     !defined(BSP_TEXTURED_NO_COVERAGE) && !defined(BSP_TEXTURED_C_REFERENCE)
 __asm__(".include \"src/quake/d_polyset_arm.inc\"\n");
 #endif
-EWRAM static uint16_t candidate_faces[BSP_FACE_COUNT];
-EWRAM static RuntimeFace runtime_faces[BSP_FACE_COUNT];
-EWRAM static MapVertex runtime_vertices[BSP_VERTEX_COUNT];
-EWRAM static MapEdge runtime_edges[BSP_EDGE_COUNT];
-EWRAM static uint16_t frame_edges[BSP_EDGE_COUNT];
-EWRAM static uint16_t frame_vertices[BSP_VERTEX_COUNT];
+EWRAM static uint16_t candidate_faces[MAPS_MAX_FACES];
+EWRAM static RuntimeFace runtime_faces[MAPS_MAX_FACES];
+EWRAM static MapVertex runtime_vertices[MAPS_MAX_VERTICES];
+EWRAM static MapEdge runtime_edges[MAPS_MAX_EDGES];
+EWRAM static uint16_t frame_edges[MAPS_MAX_EDGES];
+EWRAM static uint16_t frame_vertices[MAPS_MAX_VERTICES];
 #ifdef BSP_TEXTURED
-EWRAM static uint16_t frame_faces[BSP_FACE_COUNT];
-EWRAM static uint8_t node_near_side[BSP_NODE_COUNT];
+EWRAM static uint16_t frame_faces[MAPS_MAX_FACES];
+EWRAM static uint8_t node_near_side[MAPS_MAX_NODES];
 /* One bit per pixel, four words per 120-pixel row. Perspective segments are
  * cut on 32-pixel boundaries so each one touches exactly one word: it is
  * loaded once, tested and set in a register, stored once, and a word reading
@@ -208,8 +284,7 @@ IWRAM_DATA static uint32_t texture_coverage[SCREEN_HEIGHT][4];
  * there left too little stack and the renderer ran away to 78M cycles. */
 enum { TEXTURE_CACHE_BYTES = 32 * 1024 };
 EWRAM static uint8_t texture_cache[TEXTURE_CACHE_BYTES];
-EWRAM static uint16_t texture_cache_offsets[
-    sizeof(bsp_textures) / sizeof(bsp_textures[0])];
+EWRAM static uint16_t texture_cache_offsets[MAPS_MAX_TEXTURES];
 static uint16_t texture_cache_used;
 #ifndef BSP_TEXTURED_NO_LIGHT
 /* The shade table is read once per pixel at a column the texture picks, so the
@@ -218,11 +293,11 @@ static uint16_t texture_cache_used;
  * startup it costs two, for 16.5KB of the 56KB that was still free. IWRAM
  * would cost one, but the whole table does not fit beside the framebuffer,
  * the coverage bitmap and the stack, and half a table is no table. */
-EWRAM static uint8_t shade_table[sizeof(bsp_shade_table)];
+EWRAM static uint8_t shade_table[BSP_SHADE_ROWS * 256];
 #endif
 #endif
 #endif
-EWRAM static uint16_t face_stamp[BSP_FACE_COUNT];
+EWRAM static uint16_t face_stamp[MAPS_MAX_FACES];
 #ifdef BSP_TEXTURED
 /* Where each leaf's contents land in the front-to-back candidate order,
  * recorded during the ordered traversal. A brush entity inherits its leaf's
@@ -230,13 +305,13 @@ EWRAM static uint16_t face_stamp[BSP_FACE_COUNT];
  * coverage-first painter: drawn after everything nearer, before everything
  * farther -- and a mover behind a wall simply draws late and loses to
  * coverage. */
-EWRAM static uint16_t leaf_candidate_start[BSP_LEAF_COUNT];
+EWRAM static uint16_t leaf_candidate_start[MAPS_MAX_LEAVES];
 #endif
-EWRAM static uint16_t edge_stamp[BSP_EDGE_COUNT];
-EWRAM static uint16_t vertex_stamp[BSP_VERTEX_COUNT];
-EWRAM static uint8_t vertex_outcode[BSP_VERTEX_COUNT];
-EWRAM static CameraPoint camera_cache[BSP_VERTEX_COUNT];
-EWRAM static ScreenPoint screen_cache[BSP_VERTEX_COUNT];
+EWRAM static uint16_t edge_stamp[MAPS_MAX_EDGES];
+EWRAM static uint16_t vertex_stamp[MAPS_MAX_VERTICES];
+EWRAM static uint8_t vertex_outcode[MAPS_MAX_VERTICES];
+EWRAM static CameraPoint camera_cache[MAPS_MAX_VERTICES];
+EWRAM static ScreenPoint screen_cache[MAPS_MAX_VERTICES];
 IWRAM_DATA static uint8_t logical_framebuffer[SCREEN_WIDTH * SCREEN_HEIGHT];
 #ifdef BSP_TEXTURED
 /* Camera state for the entity render pass, which transforms its few dozen

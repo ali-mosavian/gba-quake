@@ -220,7 +220,8 @@ SHADE_SHIFT = 2
 
 
 def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
-            lmscale=16, lmgain=100, concave_merge=False):
+            lmscale=16, lmgain=100, concave_merge=False, prefix="bsp",
+            luxel_pad=None):
     data = pathlib.Path(input_path).read_bytes()
     if struct.unpack_from("<i", data)[0] != 29: raise ValueError("expected Quake BSP v29")
     lumps = [struct.unpack_from("<ii", data, 4 + i * 8) for i in range(15)]
@@ -421,39 +422,21 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
           f"teleport to {teleport_to} yaw {teleport_yaw}")
 
     lines = ["/* Generated from a Quake 1 BSP; do not edit. */",
-             "#ifndef BSP_WIREFRAME_MAP_H", "#define BSP_WIREFRAME_MAP_H", "enum {"]
-    counts = [("VERTEX", vertices), ("EDGE", edges), ("SURFEDGE", surfedges),
-              ("PLANE", planes), ("NODE", nodes), ("FACE", faces),
-              ("LEAF", leaves), ("MARKSURFACE", marks)]
-    lines += [f"    BSP_{name}_COUNT = {len(values)}," for name, values in counts]
-    lines += [f"    BSP_LUXEL_SHIFT = {8 + (lmscale.bit_length() - 1) - mip},",
-              f"    BSP_SHADE_ROWS = {SHADE_ROWS},",
-              f"    BSP_SHADE_SHIFT = {SHADE_SHIFT},",
-              f"    BSP_CLIPNODE_COUNT = {len(clipnodes)},",
-              f"    BSP_PLAYER_HULL_HEAD = {models[0][10]},",
-              f"    BSP_VISIBILITY_BYTES = {len(visibility)},",
-              f"    BSP_SPAWN_X = {round(spawn[0])}, BSP_SPAWN_Y = {round(spawn[1])},",
-              f"    BSP_SPAWN_Z = {round(spawn[2])}, BSP_SPAWN_YAW = {round(angle * 256 / 360)},",
-              f"    BSP_ENTITY_COUNT = {len(entity_values)},",
-              f"    BSP_TORCH_COUNT = {len(torch_values)},",
-              f"    BSP_TELEPORT_X = {round(teleport_to[0])},",
-              f"    BSP_TELEPORT_Y = {round(teleport_to[1])},",
-              f"    BSP_TELEPORT_Z = {round(teleport_to[2])},",
-              f"    BSP_TELEPORT_YAW = {round(teleport_yaw * 256 / 360) & 255},", "};"]
-    emit(lines, "static const MapVertex bsp_vertices[BSP_VERTEX_COUNT]",
+             f"#ifndef MAP_{prefix.upper()}_H", f"#define MAP_{prefix.upper()}_H"]
+    emit(lines, f"static const MapVertex {prefix}_vertices[]",
          [f"{{{round(x)}, {round(y)}, {round(z)}}}" for x, y, z in vertices], 4)
-    emit(lines, "static const MapEdge bsp_edges[BSP_EDGE_COUNT]", [f"{{{a}, {b}}}" for a, b in edges], 8)
-    emit(lines, "static const int16_t bsp_surfedges[BSP_SURFEDGE_COUNT]", [str(x) for x in surfedges], 16)
-    emit(lines, "static const MapPlane bsp_planes[BSP_PLANE_COUNT]",
+    emit(lines, f"static const MapEdge {prefix}_edges[]", [f"{{{a}, {b}}}" for a, b in edges], 8)
+    emit(lines, f"static const int16_t {prefix}_surfedges[]", [str(x) for x in surfedges], 16)
+    emit(lines, f"static const MapPlane {prefix}_planes[]",
          [f"{{{round(x*16384)}, {round(y*16384)}, {round(z*16384)}, {round(d)}}}" for x,y,z,d,_ in planes], 3)
     # Rendering rounds plane distances to whole units, which is invisible on a
     # 120x80 screen but would let the player sink or float by up to half a
     # unit. Collision gets the distance at Q8 instead.
-    emit(lines, "static const int32_t bsp_plane_distance_q8[BSP_PLANE_COUNT]",
+    emit(lines, f"static const int32_t {prefix}_plane_distance_q8[]",
          [str(round(d * 256)) for _, _, _, d, _ in planes], 8)
-    emit(lines, "static const MapClipNode bsp_clipnodes[BSP_CLIPNODE_COUNT]",
+    emit(lines, f"static const MapClipNode {prefix}_clipnodes[]",
          [f"{{{planenum}, {{{c0}, {c1}}}}}" for planenum, c0, c1 in clipnodes], 4)
-    emit(lines, "static const MapNode bsp_nodes[BSP_NODE_COUNT]",
+    emit(lines, f"static const MapNode {prefix}_nodes[]",
          [f"{{{node[0]}, {{{node[1]}, {node[2]}}}, {node[9]}, {node[10]}}}" for node in nodes], 4)
     # Quantised texture axes, matching what the GBA reads at runtime. Face
     # texture origins are derived from these so host and target agree exactly.
@@ -563,25 +546,27 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
                 y = ((v - (v_base << 8)) >> luxel_shift) + (offset_v >> luxel_shift)
                 if not (1 <= x < block.width - 1 and 1 <= y < block.height - 1):
                     luxels_out_of_range += 1
-    emit(lines, "static const MapFace bsp_faces[BSP_FACE_COUNT]", face_values, 2)
-    emit(lines, "static const MapEntity bsp_entities[BSP_ENTITY_COUNT]",
+    emit(lines, f"static const MapFace {prefix}_faces[]", face_values, 2)
+    emit(lines, f"static const MapEntity {prefix}_entities[]",
          entity_values, 1)
-    emit(lines, "static const MapVertex bsp_torches[BSP_TORCH_COUNT]",
+    emit(lines, f"static const MapVertex {prefix}_torches[]",
          torch_values, 6)
     print(f"  lightmap grid: {lmscale} units/luxel, {len(luxel_bytes)} luxel bytes "
           f"({len(luxel_cache)} distinct blocks), shift {luxel_shift}, "
           f"{luxels_out_of_range} vertices outside their block")
-    emit(lines, "static const MapFaceLight bsp_face_lights[BSP_FACE_COUNT]",
+    emit(lines, f"static const MapFaceLight {prefix}_face_lights[]",
          light_values, 2)
     # Padded to a power of two so the rasteriser's bounds test is one AND
     # rather than a compare and a branch. The test is there for safety, not
     # accuracy -- a segment that survives near-plane clipping with a very
     # large 1/z can produce an index far outside its own face -- so wrapping
     # is as good an answer as clamping, and it costs one instruction.
-    padded = 1 << (len(luxel_bytes) - 1).bit_length()
-    lines.append(f"#define BSP_LUXEL_MASK 0x{padded - 1:x}u")
+    padded = luxel_pad if luxel_pad else 1 << (len(luxel_bytes) - 1).bit_length()
+    if len(luxel_bytes) > padded:
+        raise ValueError(f"{prefix}: {len(luxel_bytes)} luxel bytes exceed the "
+                         f"shared pad of {padded}")
     luxel_bytes.extend(bytes(padded - len(luxel_bytes)))
-    emit(lines, "static const uint8_t bsp_lightmap_luxels[]",
+    emit(lines, f"static const uint8_t {prefix}_lightmap_luxels[]",
          [str(x) for x in luxel_bytes], 24)
     # An overall exposure, applied to the table so it costs nothing at
     # runtime. dm1's bake centres on 0.75x -- softquake's light tool writes an
@@ -591,9 +576,9 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
     shade = bsp_lightmap.build_shade_table(
         palette_rgb, rows=SHADE_ROWS,
         neutral_row=(neutral_byte >> SHADE_SHIFT), gain=lmgain / 100.0)
-    emit(lines, "static const uint8_t bsp_shade_table[BSP_SHADE_ROWS * 256]"
+    emit(lines, f"static const uint8_t {prefix}_shade_table[]"
                 " __attribute__((aligned(4)))", [str(x) for x in shade], 24)
-    emit(lines, "static const uint16_t bsp_face_vertices[]",
+    emit(lines, f"static const uint16_t {prefix}_face_vertices[]",
          [str(v) for v in face_vertex_ring], 16)
     # Texture coordinates per ring entry, not per vertex.
     #
@@ -605,26 +590,67 @@ def extract(input_path, output_path, pak_path=None, merge=True, mip=0,
     # texture origin. Per ring entry is the granularity that makes them
     # constant. Emitted with that origin already subtracted, exactly as
     # world_texture_coordinates left them.
-    emit(lines, "static const int32_t bsp_face_texcoords[]",
+    emit(lines, f"static const int32_t {prefix}_face_texcoords[]",
          [str(value) for pair in face_vertex_texcoords for value in pair], 12)
     # Axes scaled by the mip factor so u and v come out in the stored level's
     # texel units; nothing downstream needs to know the level.
     axis_scale = 4096.0 / (1 << mip)
-    emit(lines, "static const MapTexInfo bsp_texinfo[]",
+    emit(lines, f"static const MapTexInfo {prefix}_texinfo[]",
          ["{{{%d, %d, %d, %d}, {%d, %d, %d, %d}}, %d}" % tuple(
              [round(value * axis_scale) for value in info[:8]] + [info[8]]) for info in texinfo], 2)
-    emit(lines, "static const MapTexture bsp_textures[]",
+    emit(lines, f"static const MapTexture {prefix}_textures[]",
          [f"{{{offset}, {width}, {height}}}" for offset, width, height in textures], 4)
-    emit(lines, "static const uint8_t bsp_texture_pixels[]", [str(x) for x in texture_pixels], 24)
-    emit(lines, "static const uint16_t bsp_palette[256]", [str(x) for x in palette], 16)
-    emit(lines, "static const MapLeaf bsp_leaves[BSP_LEAF_COUNT]",
+    emit(lines, f"static const uint8_t {prefix}_texture_pixels[]", [str(x) for x in texture_pixels], 24)
+    emit(lines, f"static const uint16_t {prefix}_palette[]", [str(x) for x in palette], 16)
+    emit(lines, f"static const MapLeaf {prefix}_leaves[]",
          [f"{{{leaf[0]}, {leaf[1]}, {leaf[8]}, {leaf[9]}}}" for leaf in leaves], 4)
-    emit(lines, "static const uint16_t bsp_marksurfaces[BSP_MARKSURFACE_COUNT]", [str(x) for x in marks], 16)
-    emit(lines, "static const uint8_t bsp_visibility[BSP_VISIBILITY_BYTES]", [str(x) for x in visibility], 24)
+    emit(lines, f"static const uint16_t {prefix}_marksurfaces[]", [str(x) for x in marks], 16)
+    emit(lines, f"static const uint8_t {prefix}_visibility[]", [str(x) for x in visibility], 24)
+    if prefix == "bsp":
+        # Compatibility block for the single-map tooling header: the beam,
+        # floor-plan and preview generators parse these names.
+        lines.append("enum {")
+        lines.append(f"    BSP_LUXEL_SHIFT = {8 + (lmscale.bit_length() - 1) - mip},")
+        lines.append(f"    BSP_SHADE_ROWS = {SHADE_ROWS},")
+        lines.append(f"    BSP_SHADE_SHIFT = {SHADE_SHIFT},")
+        lines.append(f"    BSP_SPAWN_X = {round(spawn[0])}, BSP_SPAWN_Y = {round(spawn[1])},")
+        lines.append(f"    BSP_SPAWN_Z = {round(spawn[2])}, BSP_SPAWN_YAW = {round(angle * 256 / 360)},")
+        lines.append("};")
+        lines.append(f"#define BSP_LUXEL_MASK 0x{padded - 1:x}u")
+    display = prefix.replace("_", " ").upper()
+    lines.append(
+        f'static const MapDescriptor {prefix}_map = {{\n'
+        f'    "{display[:11]}",\n'
+        f'    {prefix}_vertices, {len(vertices)}, {prefix}_edges, {len(edges)},\n'
+        f'    {prefix}_surfedges, {prefix}_planes, {prefix}_plane_distance_q8,\n'
+        f'    {prefix}_clipnodes, {models[0][10]},\n'
+        f'    {prefix}_nodes, {len(nodes)}, {prefix}_leaves, {len(leaves)},\n'
+        f'    {prefix}_marksurfaces, {prefix}_visibility, {len(visibility)},\n'
+        f'    {prefix}_faces, {len(faces)}, {prefix}_face_vertices,\n'
+        f'    {prefix}_face_texcoords, {prefix}_face_lights,\n'
+        f'    {prefix}_lightmap_luxels, {prefix}_shade_table,\n'
+        f'    {prefix}_texinfo, {prefix}_textures, {len(textures)},\n'
+        f'    {prefix}_texture_pixels, {prefix}_palette,\n'
+        f'    {prefix}_entities, {len(entity_values)},\n'
+        f'    {prefix}_torches, {len(torch_values)},\n'
+        f'    {{{round(spawn[0])}, {round(spawn[1])}, {round(spawn[2])}}}, '
+        f'{round(angle * 256 / 360) & 255},\n'
+        f'    {{{round(teleport_to[0])}, {round(teleport_to[1])}, '
+        f'{round(teleport_to[2])}}}, {round(teleport_yaw * 256 / 360) & 255},\n'
+        f'}};')
     lines.append("#endif")
     pathlib.Path(output_path).write_text("\n".join(lines) + "\n")
-    print(f"BSP package: {len(vertices)} vertices, {len(edges)} edges, {len(faces)} faces, "
-          f"{len(leaves)} leaves, mip {mip}, texture bytes {len(texture_pixels)}")
+    print(f"BSP package {prefix}: {len(vertices)} vertices, {len(faces)} faces, "
+          f"{len(leaves)} leaves, {len(entity_values)} entities, "
+          f"texture bytes {len(texture_pixels)}")
+    return {"vertices": len(vertices), "edges": len(edges),
+            "surfedges": len(surfedges), "planes": len(planes),
+            "nodes": len(nodes), "faces": len(faces), "leaves": len(leaves),
+            "marksurfaces": len(marks), "clipnodes": len(clipnodes),
+            "entities": len(entity_values), "torches": len(torch_values),
+            "textures": len(textures), "luxel_bytes": len(luxel_bytes),
+            "luxel_shift": 8 + (lmscale.bit_length() - 1) - mip,
+            "shade_rows": SHADE_ROWS, "shade_shift": SHADE_SHIFT}
 
 if __name__ == "__main__":
     extract(sys.argv[1], sys.argv[2],

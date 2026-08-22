@@ -29,7 +29,7 @@ typedef struct {
     uint8_t fired;           /* a button fires its target once per press */
 } EntityState;
 
-static EntityState entity_states[BSP_ENTITY_COUNT];
+static EntityState entity_states[MAPS_MAX_ENTITIES];
 
 static int entity_is_solid(const MapEntity *entity)
 {

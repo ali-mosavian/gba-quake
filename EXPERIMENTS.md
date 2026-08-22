@@ -49,6 +49,16 @@ view (the drawbridge); ~1,741K where no mover is visible. 30 FPS is 559,333.
 | Copying the per-face light state into drawer locals | +75K of spills -- fourth instance of the shared-live-state trap; the state stays in globals, one flag load per segment |
 | Cost | **+54K infrastructure, ~+105K with the carried light active at the spawn** (8.9 -> 8.2 FPS worst case) |
 
+### Multi-map ROM with a boot menu
+| aspect | outcome |
+|---|---|
+| Per-map data under its own prefix + one MapDescriptor of pointers | the old bsp_* names live on as macros over a single `map` pointer; the renderer reads as it did single-map |
+| EWRAM arenas sized by MAPS_MAX_* across the included set | dm1, e1m7, end, dm4, dm5, dm6 fit; the big episode maps still do not |
+| Luxel arrays padded to one shared 256KB so BSP_LUXEL_MASK stays a compile-time constant | ~120KB ROM waste per map, zero runtime cost |
+| Menu only in the bsp_menu target | every benchmark ROM must reach its pose without input |
+| START returns to the menu; map switch reinitialises palette, shade table, texture cache, entities, stamps | |
+| 3x5 font orientation | the octal literals were written top-row-first while the renderer reads low bits as the top row: SELECT MAP rendered SELErT M0P, 7 as L -- and the FPS counter's font had the same latent bug |
+
 ## Rejected
 
 ### Row and scan conversion

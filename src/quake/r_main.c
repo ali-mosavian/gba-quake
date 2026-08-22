@@ -26,9 +26,10 @@ static uint16_t read_keys(void) { return (uint16_t)(~REG_KEYINPUT) & 0x03ff; }
 static void draw_fps_counter(void)
 {
     /* 3x5 digit glyphs, one row per 3 bits, top row in the low bits. */
+    /* Same orientation fix as the menu font: low bits are the top row. */
     static const uint16_t glyphs[10] = {
-        075557, 022222, 071747, 071717, 055711,
-        074717, 074757, 071111, 075757, 075717,
+        075557, 072232, 071747, 074747, 044755,
+        074717, 075717, 044447, 075757, 074757,
     };
     static uint16_t previous_tick;
     static uint16_t history[4];
@@ -106,8 +107,100 @@ static void wait_for_vblank(void)
     while (REG_VCOUNT < 160) {}
 }
 
+
+/* Map selection, drawn with the renderer's own machinery: glyphs into the
+ * logical framebuffer, expanded to the visible page. 3x5 font, one octal
+ * digit per row, low row on top, bit 0 the left column -- the same encoding
+ * the FPS counter uses.
+ *
+ * The interactive builds open here at boot and return here on START; the
+ * scripted and benchmark builds skip straight to map zero so every
+ * measurement stays deterministic. */
+#ifdef BSP_MENU
+static void menu_glyph(char character, unsigned x, unsigned y, uint8_t color)
+{
+    /* Both tables read row 0 out of the LOW bits -- the top row -- and bit 0
+     * of each row triple is the LEFT column. The first version wrote the
+     * octal literals top-row-first, which mirrored every asymmetric glyph:
+     * SELECT MAP rendered as SELErT M0P and 7 as L. */
+    static const uint16_t letters[26] = {
+        055752, 035353, 061116, 035553, 071317, 011317, 065516, 055755,
+        072227, 025444, 055355, 071111, 055775, 057775, 025552, 011353,
+        046552, 055353, 034216, 022227, 065555, 022555, 057755, 052225,
+        022255, 071247,
+    };
+    static const uint16_t digits[10] = {
+        075557, 072232, 071747, 074747, 044755,
+        074717, 075717, 044447, 075757, 074757,
+    };
+    uint16_t glyph = 0;
+    if (character >= 'A' && character <= 'Z') glyph = letters[character - 'A'];
+    else if (character >= '0' && character <= '9') glyph = digits[character - '0'];
+    else if (character == '>') glyph = 013731;
+    if (!glyph) return;
+    for (unsigned row = 0; row < 5; ++row)
+        for (unsigned column = 0; column < 3; ++column)
+            if ((glyph >> (row * 3 + column)) & 1u)
+                logical_framebuffer[(y + row) * SCREEN_WIDTH + x + column] = color;
+}
+
+static void menu_text(const char *text, unsigned x, unsigned y, uint8_t color)
+{
+    for (; *text; ++text, x += 4) menu_glyph(*text, x, y, color);
+}
+
+static unsigned menu_run(unsigned selected)
+{
+    BG_PALETTE[0] = 0;
+    BG_PALETTE[14] = 0x2529;              /* dim grey */
+    BG_PALETTE[15] = 0x7fff;              /* white */
+    REG_DISPCNT = DISPLAY_MODE_4 | DISPLAY_BG2;
+    uint16_t previous = (uint16_t)~REG_KEYINPUT;
+    for (;;) {
+        clear_logical_framebuffer(logical_framebuffer);
+        menu_text("SELECT MAP", 32, 8, 15);
+        for (unsigned i = 0; i < BSP_MAP_COUNT; ++i) {
+            unsigned y = 24 + i * 8;
+            if (i == selected) menu_glyph('>', 24, y, 15);
+            menu_text(bsp_maps[i]->name, 32, y, i == selected ? 15 : 14);
+        }
+        while (REG_VCOUNT >= 160) {}
+        while (REG_VCOUNT < 160) {}
+        expand_logical_framebuffer(logical_framebuffer,
+                                   (volatile uint16_t *)MODE4_PAGE_0);
+        REG_DISPCNT = DISPLAY_MODE_4 | DISPLAY_BG2;   /* page zero */
+        uint16_t keys = (uint16_t)~REG_KEYINPUT;
+        uint16_t pressed = keys & (uint16_t)~previous;
+        previous = keys;
+        if (pressed & KEY_UP)
+            selected = (selected + BSP_MAP_COUNT - 1) % BSP_MAP_COUNT;
+        if (pressed & KEY_DOWN)
+            selected = (selected + 1) % BSP_MAP_COUNT;
+        if (pressed & (KEY_A | KEY_START)) return selected;
+    }
+}
+#endif
+
 int main(void)
 {
+    REG_WAITCNT = WAITCNT_FAST_ROM;
+    REG_TM3CNT = 0;
+    REG_TM3D = 0;
+    REG_TM3CNT = TIMER_ENABLE | TIMER_DIV1024;
+    REG_MEMCTRL = MEMCTRL_FAST_EWRAM;
+    REG_DISPCNT = 0;
+    unsigned selected_map = 0;
+new_map:
+#ifdef BSP_MENU
+    /* Only the shipping ROM opens the menu: every benchmark and profile
+     * build must reach its fixed pose without input, or the measurements
+     * would include a menu waiting for a button. */
+    selected_map = menu_run(selected_map);
+#endif
+    map = bsp_maps[selected_map];
+    cached_camera_leaf = INVALID_LEAF;
+    for (unsigned i = 0; i < MAPS_MAX_ENTITIES; ++i)
+        entity_states[i] = (EntityState){0, 0, 0, 0};
     /* The spawn entity's origin is the player origin; the eye sits above it. */
     Player player;
     player.position.x = Q8_FROM_INT(BSP_SPAWN_X);
@@ -131,21 +224,15 @@ int main(void)
     uint16_t previous_keys = 0;
     for (unsigned i = 0; i < BSP_VERTEX_COUNT; ++i) runtime_vertices[i] = bsp_vertices[i];
     for (unsigned i = 0; i < BSP_EDGE_COUNT; ++i) runtime_edges[i] = bsp_edges[i];
-    REG_WAITCNT = WAITCNT_FAST_ROM;
-    REG_TM3CNT = 0;
-    REG_TM3D = 0;
-    REG_TM3CNT = TIMER_ENABLE | TIMER_DIV1024;
-    REG_MEMCTRL = MEMCTRL_FAST_EWRAM;
     REG_DISPCNT = 0;
     BG_PALETTE[0] = 0;
 #ifdef BSP_TEXTURED
 #ifndef BSP_TEXTURED_SOLID
-    for (unsigned texture = 0;
-         texture < sizeof(bsp_textures) / sizeof(bsp_textures[0]); ++texture)
+    for (unsigned texture = 0; texture < map->texture_count; ++texture)
         texture_cache_offsets[texture] = 0xffff;
 #ifndef BSP_TEXTURED_NO_LIGHT
-    for (unsigned i = 0; i < sizeof(bsp_shade_table) / 4; ++i)
-        ((uint32_t *)shade_table)[i] = ((const uint32_t *)bsp_shade_table)[i];
+    for (unsigned i = 0; i < BSP_SHADE_BYTES / 4u; ++i)
+        ((uint32_t *)shade_table)[i] = ((const uint32_t *)map->shade_rom)[i];
 #endif
 #endif
     for (unsigned color = 0; color < 256; ++color) BG_PALETTE[color] = bsp_palette[color];
@@ -185,6 +272,9 @@ int main(void)
             player.yaw_q8 = Q8_FROM_INT(BSP_SPAWN_YAW) + BSP_YAW_OFFSET_Q8;
             cached_camera_leaf = INVALID_LEAF;
         } else {
+#ifdef BSP_MENU
+            if (pressed & KEY_START) goto new_map;
+#endif
             update_player(&player, keys, pressed, bsp_profile.total_cycles);
         }
         /* Movers and the teleporter run on the same wall clock as the

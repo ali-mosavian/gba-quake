@@ -10,7 +10,7 @@ enum {
     MODE4_PAGE_2 = 0x0600a000,
     DISPLAY_MODE_4 = 4,
     DISPLAY_FRAME_SELECT = 1u << 4,
-    DMA_ENABLE = 1u << 31,
+    /* DMA_ENABLE now comes from gba_hardware.h. */
 };
 
 #define REG_DMA3_SOURCE      GBA_REG32(0x040000d4)

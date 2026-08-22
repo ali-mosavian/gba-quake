@@ -21,7 +21,7 @@ fi
 # every BSP_* variable is declared with ?= for exactly that reason.
 # Headers whose generators need host-only Python packages are built here
 # before the container runs; the map header regenerates fine in either place.
-make -s src/generated/bsp_wireframe_map.h src/generated/beam_frame.h \
+make -s src/generated/bsp_wireframe_map.h src/generated/maps_index.h src/generated/beam_frame.h \
     src/generated/floor_plan.h >/dev/null
 mounts=""
 for path in "$(make -s print-BSP_MAP)" "$(make -s print-BSP_PAK)"; do
